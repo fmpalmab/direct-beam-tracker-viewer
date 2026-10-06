@@ -44,11 +44,11 @@ Steer a beam to an RA/Dec; kotekan converts to (l, m) internally.
 
 ## POST /direct_tracker/enable_beam
 
-Enable or disable beams / set the number of active beams.
+Set the number of active beams.
 
-**Request JSON:** e.g. `{"beam_id": 2, "enabled": true}` or
-`{"num_active_beams": 4}` (see source for exact accepted keys — confirm
-against `cudaDirectBeamTrackerCommand.cpp` lines ~316–346).
+**Request JSON:** `{"num_active_beams": 4}` — confirmed against
+`cudaDirectBeamTrackerCommand.cpp` (lines ~304–316). Value is clamped to
+`MAX_DIRECT_BEAMS` (8). Reply is plain text.
 
 ---
 
@@ -56,8 +56,11 @@ against `cudaDirectBeamTrackerCommand.cpp` lines ~316–346).
 
 Mask/unmask an antenna element.
 
-**Request JSON:** antenna index and mask flag (confirm exact keys in source,
-lines ~346–360). Masked antennas are excluded from beamforming.
+**Request JSON:** `{"antenna_id": 5, "enabled": true}` — confirmed against
+source (lines ~319–347). **Note the polarity:** `enabled: true` means the
+antenna is ACTIVE (source sets `antenna_mask[id] = enabled ? 1 : 0` and
+masked-out antennas are those with mask 0). 400 if `antenna_id` missing or
+≥ `MAX_DIRECT_ANTENNAS`. Reply is plain text.
 
 ---
 
@@ -65,8 +68,9 @@ lines ~346–360). Masked antennas are excluded from beamforming.
 
 Set weight interpolation mode (e.g. nearest-grid vs. linear).
 
-**Request JSON:** interpolation mode selector (confirm keys in source,
-lines ~360–420).
+**Request JSON:** `{"enabled": true}` — confirmed against source
+(lines ~350–361). Toggles subframe phase interpolation (linear weight
+interpolation within a frame vs. per-frame weights). Reply is plain text.
 
 ---
 
@@ -80,6 +84,8 @@ Full tracker state.
 {
   "active_antennas": 42,
   "active_raw_elements": [0, 1, 5, ...],
+  "num_active_beams": 2,
+  "subframe_interpolation_enabled": true,
   "beams": [
     {
       "beam_id": 0,
@@ -101,4 +107,6 @@ Full tracker state.
 - Direction cosines `(l, m, n)`, `n = sqrt(1 - l^2 - m^2)`, ENU topocentric frame.
 - RA/Dec in degrees, J2000.
 - Poll `/status` at 1–5 Hz for live display; do not poll faster than the
-  kotekan frame cadence.
+  kotekan frame cadence. **The viewer polls at 2 Hz from a single server-side
+  poller** and fans out to browsers over WebSocket — see docs/PLANNING.md.
+- All POST endpoints reply with **plain text** (not JSON) on success.

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Direct Beam Tracker Viewer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <h1>Direct Beam Tracker</h1>
+      <span class="sub-title">Kotekan GPU Beamformer Control</span>
+    </div>
+    <div class="header-right">
+      <div class="status-badge" id="conn-badge">
+        <span class="indicator" id="conn-dot"></span>
+        <span id="conn-label">Connecting...</span>
+      </div>
+      <div class="header-info" id="backend-info">
+        <span id="active-summary">0 / 0 beams</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-layout">
+    <!-- Left Column: Sky Map -->
+    <section class="panel map-panel">
+      <div class="panel-header">
+        <h2>Topocentric Sky Map (l, m)</h2>
+        <div class="map-legend" id="map-legend"></div>
+      </div>
+      <div class="canvas-container">
+        <canvas id="sky-canvas" width="600" height="600"></canvas>
+      </div>
+      <div class="map-footer">
+        <span>Projection: Polar $(l, m)$ in ENU topocentric frame</span>
+        <span id="cursor-coords">l: -- , m: --</span>
+      </div>
+    </section>
+
+    <!-- Right Column: Controls, Tables, Forms -->
+    <section class="panel-column">
+      <!-- Global Controls -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Tracker Configuration</h2>
+        </div>
+        <div class="config-bar">
+          <div class="config-item">
+            <label for="num-beams-select">Active Beams:</label>
+            <div class="inline-control">
+              <input type="number" id="num-beams-select" min="1" max="8" value="1">
+              <button class="btn btn-secondary" id="apply-beams-btn">Apply</button>
+            </div>
+          </div>
+          <div class="config-item">
+            <label class="toggle-label">
+              <input type="checkbox" id="interp-toggle">
+              <span>Phase Interpolation</span>
+            </label>
+          </div>
+          <div class="config-item">
+            <span class="stat-label">Active Antennas:</span>
+            <span class="stat-val" id="active-antennas-count">0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Beam Status Table -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Active Beams</h2>
+          <span class="hint-text">Click a row to select beam & show trail</span>
+        </div>
+        <div class="table-container">
+          <table class="data-table" id="beam-table">
+            <thead>
+              <tr>
+                <th>Beam</th>
+                <th>l0</th>
+                <th>m0</th>
+                <th>n0</th>
+                <th>Grid Idx</th>
+                <th>Target (RA / Dec)</th>
+              </tr>
+            </thead>
+            <tbody id="beam-table-body">
+              <tr><td colspan="6" class="empty-state">No status data received yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Steering Control -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Steer Beam</h2>
+          <div class="tab-buttons">
+            <button class="tab-btn active" data-tab="tab-lm" id="tab-btn-lm">Direction Cosines</button>
+            <button class="tab-btn" data-tab="tab-celestial" id="tab-btn-celestial">Celestial (RA/Dec)</button>
+          </div>
+        </div>
+
+        <div id="toast-message" class="toast hidden"></div>
+
+        <!-- Tab 1: Direction Cosines -->
+        <form id="form-steer-lm" class="steer-form tab-content active">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="lm-beam-id">Target Beam:</label>
+              <select id="lm-beam-id" required>
+                <option value="0">Beam 0</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="lm-l0">l0 (East):</label>
+              <input type="number" id="lm-l0" step="any" required placeholder="e.g. 0.15">
+            </div>
+            <div class="form-group">
+              <label for="lm-m0">m0 (North):</label>
+              <input type="number" id="lm-m0" step="any" required placeholder="e.g. -0.20">
+            </div>
+          </div>
+          <details class="adv-params">
+            <summary>Linear Trajectory (Optional)</summary>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="lm-l1">l1 (End):</label>
+                <input type="number" id="lm-l1" step="any" placeholder="optional">
+              </div>
+              <div class="form-group">
+                <label for="lm-m1">m1 (End):</label>
+                <input type="number" id="lm-m1" step="any" placeholder="optional">
+              </div>
+              <div class="form-group">
+                <label for="lm-dl">dl/sample:</label>
+                <input type="number" id="lm-dl" step="any" placeholder="optional">
+              </div>
+              <div class="form-group">
+                <label for="lm-dm">dm/sample:</label>
+                <input type="number" id="lm-dm" step="any" placeholder="optional">
+              </div>
+            </div>
+          </details>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="btn-submit-lm">Send Target (l, m)</button>
+          </div>
+        </form>
+
+        <!-- Tab 2: Celestial -->
+        <form id="form-steer-celestial" class="steer-form tab-content">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="cel-beam-id">Target Beam:</label>
+              <select id="cel-beam-id" required>
+                <option value="0">Beam 0</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cel-ra">RA (deg, 0..360):</label>
+              <input type="number" id="cel-ra" min="0" max="359.999" step="any" required placeholder="e.g. 83.63">
+            </div>
+            <div class="form-group">
+              <label for="cel-dec">Dec (deg, -90..90):</label>
+              <input type="number" id="cel-dec" min="-90" max="90" step="any" required placeholder="e.g. 22.01">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="btn-submit-cel">Send Celestial Target</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Antenna Mask Grid -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Antenna Element Mask</h2>
+          <span class="hint-text">Green = active, Grey = masked. Click element to toggle.</span>
+        </div>
+        <div class="antenna-grid" id="antenna-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
