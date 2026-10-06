@@ -11,7 +11,7 @@ from dataclasses import dataclass
 class Settings:
     kotekan_url: str = "http://localhost:12048"
     host: str = "127.0.0.1"
-    port: int = 8080
+    port: int = 8088
     poll_interval: float = 0.5
 
 
@@ -34,8 +34,8 @@ def parse_args(args: list[str] | None = None) -> Settings:
         "--port",
         dest="port",
         type=int,
-        default=int(os.environ.get("VIEWER_PORT", "8080")),
-        help="Port to bind server (default: 8080)",
+        default=int(os.environ.get("VIEWER_PORT", "8088")),
+        help="Port to bind server (default: 8088)",
     )
     parser.add_argument(
         "--poll-interval",

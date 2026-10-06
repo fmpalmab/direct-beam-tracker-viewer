@@ -20,17 +20,17 @@ That's it. No system Python, no pip, no build tools.
 
 ```bash
 # kotekan REST server defaults to :12048 on the same node
-uv run viewer --kotekan http://localhost:12048 --port 8080
+uv run viewer --kotekan http://localhost:12048 --port 8088
 ```
 
-Defaults: binds `127.0.0.1:8080`, polls kotekan at 2 Hz. Override with
+Defaults: binds `127.0.0.1:8088`, polls kotekan at 2 Hz. Override with
 `--host/--port/--poll-interval` or env vars `KOTEKAN_URL`, `VIEWER_HOST`,
 `VIEWER_PORT`.
 
 To keep it running after logout:
 
 ```bash
-nohup uv run viewer --port 8080 > viewer.log 2>&1 &
+nohup uv run viewer --port 8088 > viewer.log 2>&1 &
 # or a systemd user unit / tmux session — operator's choice
 ```
 
@@ -39,10 +39,10 @@ nohup uv run viewer --port 8080 > viewer.log 2>&1 &
 On **each** operator PC:
 
 ```bash
-ssh -L 8080:localhost:8080 user@processing-node
+ssh -L 8088:localhost:8088 user@processing-node
 ```
 
-then open <http://localhost:8080> in the browser. Every PC makes its own
+then open <http://localhost:8088> in the browser. Every PC makes its own
 tunnel; all of them share the same viewer instance, and the viewer still
 polls kotekan **once** at 2 Hz regardless of how many browsers are open.
 
@@ -52,7 +52,7 @@ Optional: add to `~/.ssh/config` on each PC:
 Host charts-viewer
     HostName processing-node
     User user
-    LocalForward 8080 localhost:8080
+    LocalForward 8088 localhost:8088
 ```
 
 then `ssh charts-viewer` and browse.
@@ -60,10 +60,10 @@ then `ssh charts-viewer` and browse.
 ### Direct LAN access (optional, trusted subnet only)
 
 ```bash
-uv run viewer --host 0.0.0.0 --port 8080
+uv run viewer --host 0.0.0.0 --port 8088
 ```
 
-and browse to `http://<node-ip>:8080` — no tunnel. There is **no
+and browse to `http://<node-ip>:8088` — no tunnel. There is **no
 authentication**; only do this on a subnet you trust, same as the kotekan
 REST server itself.
 
@@ -77,6 +77,6 @@ REST server itself.
 ## 5. Health check
 
 ```bash
-curl http://localhost:8080/api/health
+curl http://localhost:8088/api/health
 # {"kotekan_reachable": true, "poll_interval_s": 0.5, "uptime_s": 123.4}
 ```

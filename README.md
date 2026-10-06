@@ -23,11 +23,11 @@ queries kotekan at 2 Hz and fans out to any number of browsers over WebSocket.
 
 # 2. On the processing node, from this directory:
 uv sync
-uv run viewer --kotekan http://localhost:12048 --port 8080
+uv run viewer --kotekan http://localhost:12048 --port 8088
 
 # 3. On each operator PC, forward the port and open the browser:
-ssh -L 8080:localhost:8080 user@processing-node
-#    → http://localhost:8080
+ssh -L 8088:localhost:8088 user@processing-node
+#    → http://localhost:8088
 ```
 
 Full setup, multi-PC access, and LAN option: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

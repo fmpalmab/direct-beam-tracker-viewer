@@ -12,10 +12,10 @@ A web viewer/control panel for a running kotekan instance with the
 through one SSH port-forward** to the processing node:
 
 ```
-operator laptops ──ssh -L 8080:localhost:8080──▶ processing node
+operator laptops ──ssh -L 8088:localhost:8088──▶ processing node
                                                     ├── kotekan  (REST :12048, GPU node, do not disturb)
-                                                    └── viewer   (uvicorn :8080, talks to kotekan on localhost)
-browser: http://localhost:8080
+                                                    └── viewer   (uvicorn :8088, talks to kotekan on localhost)
+browser: http://localhost:8088
 ```
 
 ## Hard constraints (do not violate)
@@ -112,7 +112,7 @@ direct-beam-tracker-viewer/
 
 `config.py`: argparse on `--kotekan` (env `KOTEKAN_URL`, default
 `http://localhost:12048`), `--host` (env `VIEWER_HOST`, default `127.0.0.1`),
-`--port` (env `VIEWER_PORT`, default `8080`), `--poll-interval` (default 0.5,
+`--port` (env `VIEWER_PORT`, default `8088`), `--poll-interval` (default 0.5,
 floor at 0.2 s — never faster). Return a `Settings` dataclass.
 
 ### Task 2 — `client.py`
@@ -221,7 +221,7 @@ cd direct-beam-tracker-viewer
 uv sync --dev
 uv run pytest tests/ -q          # all green
 uv run viewer --kotekan http://localhost:12048 &
-# with kotekan running: open http://localhost:8080 (via tunnel, see DEPLOYMENT.md),
+# with kotekan running: open http://localhost:8088 (via tunnel, see DEPLOYMENT.md),
 # steer beam 0 to l=0.1, m=0.2 → dot moves; kotekan /direct_tracker/status agrees.
 # open the same URL from a second browser/PC → both update; confirm on the node
 # (e.g. kotekan logs or `ss -tnp | grep 12048`) that only ONE poller connection exists.

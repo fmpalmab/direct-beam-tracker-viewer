@@ -164,6 +164,6 @@ def test_settings() -> Settings:
     return Settings(
         kotekan_url="http://mock-kotekan:12048",
         host="127.0.0.1",
-        port=8080,
+        port=8088,
         poll_interval=0.2,
     )
