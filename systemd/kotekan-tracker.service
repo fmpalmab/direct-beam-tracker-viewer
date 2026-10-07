@@ -1,0 +1,18 @@
+[Unit]
+Description=CHARTS Kotekan 64-Antenna Direct Beam Tracker (24h Live Stream)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/fpalma/kotekan
+ExecStartPre=-/usr/bin/rm -f /dev/hugepages/rtemap_*
+ExecStart=/home/fpalma/kotekan/build/kotekan/kotekan -c /home/fpalma/kotekan/charts/config/64antennas_direct_tracker.yaml -b 127.0.0.1:12048
+Restart=on-failure
+RestartSec=5s
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

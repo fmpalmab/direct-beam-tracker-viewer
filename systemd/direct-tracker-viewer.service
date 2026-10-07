@@ -1,0 +1,15 @@
+[Unit]
+Description=CHARTS Direct Beam Tracker Viewer (FastAPI & WebSocket UI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/fpalma/direct-beam-tracker-viewer
+ExecStart=/usr/local/bin/uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048
+Restart=always
+RestartSec=3s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
