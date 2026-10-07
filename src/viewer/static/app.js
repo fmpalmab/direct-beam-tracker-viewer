@@ -6,6 +6,7 @@
   ];
 
   let currentStatus = null;
+  let routineState = null;
   let selectedBeamId = 0;
   let beamTrails = {};
   let ws = null;
@@ -20,6 +21,7 @@
   const connLabel = document.getElementById('conn-label');
   const activeSummary = document.getElementById('active-summary');
   const activeAntennasCount = document.getElementById('active-antennas-count');
+  const routineSummary = document.getElementById('routine-summary');
   const beamTableBody = document.getElementById('beam-table-body');
   const antennaGrid = document.getElementById('antenna-grid');
   const numBeamsSelect = document.getElementById('num-beams-select');
@@ -83,6 +85,8 @@
         const data = JSON.parse(event.data);
         if (data.type === 'spectrometer') {
           handleSpectrometerUpdate(data.data || data);
+        } else if (data.type === 'routine') {
+          handleRoutineUpdate(data.data || data);
         } else {
           handleStatusUpdate(data);
         }
@@ -121,10 +125,48 @@
           const specData = await resSpec.json();
           handleSpectrometerUpdate(specData);
         }
+
+        const resRoutine = await fetch('/api/routine');
+        if (resRoutine.ok) {
+          handleRoutineUpdate(await resRoutine.json());
+        }
       } catch (e) {
         setConnectionState('disconnected', 'Disconnected');
       }
     }, 2000);
+  }
+
+  // --- Observation Routine ---
+
+  function beamName(beamId) {
+    if (routineState && routineState.beam_names) {
+      return routineState.beam_names[String(beamId)] || null;
+    }
+    return null;
+  }
+
+  function handleRoutineUpdate(data) {
+    routineState = data;
+
+    if (routineSummary) {
+      if (!routineState || !routineState.enabled) {
+        routineSummary.textContent = 'Routine: off';
+        routineSummary.parentElement.hidden = routineState ? !routineState.enabled : true;
+      } else if (routineState.last_error) {
+        routineSummary.textContent = `Routine: ERROR (${routineState.last_error})`;
+        routineSummary.parentElement.hidden = false;
+      } else {
+        const next = routineState.next_slot_time_local || '--:--';
+        routineSummary.textContent = `Routine: ON · next change ${next}`;
+        routineSummary.parentElement.hidden = false;
+      }
+    }
+
+    if (currentStatus) {
+      updateBeamSelects(currentStatus.beams);
+      renderBeamTable(currentStatus.beams);
+    }
+    requestAnimationFrame(drawSkyMap);
   }
 
   // --- Status Update Handler ---
@@ -164,14 +206,15 @@
 
     const ids = beams.length > 0 ? beams.map(b => b.beam_id) : [0];
     ids.forEach(id => {
+      const name = beamName(id);
       const optLm = document.createElement('option');
       optLm.value = id;
-      optLm.textContent = `Beam ${id}`;
+      optLm.textContent = `Beam ${id}${name ? ' — ' + name : ''}`;
       lmBeamSelect.appendChild(optLm);
 
       const optCel = document.createElement('option');
       optCel.value = id;
-      optCel.textContent = `Beam ${id}`;
+      optCel.textContent = `Beam ${id}${name ? ' — ' + name : ''}`;
       celBeamSelect.appendChild(optCel);
     });
 
@@ -195,8 +238,9 @@
         ? `${b.celestial_target.ra_deg.toFixed(2)}°, ${b.celestial_target.dec_deg.toFixed(2)}°`
         : 'Direction cosines';
 
+      const name = beamName(b.beam_id);
       tr.innerHTML = `
-        <td style="color: ${color}; font-weight: bold;">● Beam ${b.beam_id}</td>
+        <td style="color: ${color}; font-weight: bold;">● Beam ${b.beam_id}${name ? ` — ${name}` : ''}</td>
         <td>${b.l0.toFixed(4)}</td>
         <td>${b.m0.toFixed(4)}</td>
         <td>${b.n0.toFixed(4)}</td>
@@ -382,6 +426,14 @@
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'left';
         ctx.fillText(`B${b.beam_id}`, bx + 8, by - 6);
+
+        // Routine target name
+        const name = beamName(b.beam_id);
+        if (name) {
+          ctx.fillStyle = '#9fb3c8';
+          ctx.font = '10px monospace';
+          ctx.fillText(name, bx + 8, by + 10);
+        }
       });
     }
   }
@@ -941,6 +993,10 @@
   // Initial draw & connect
   drawSkyMap();
   drawSpectrometer();
+  fetch('/api/routine')
+    .then(res => res.ok ? res.json() : null)
+    .then(data => { if (data) handleRoutineUpdate(data); })
+    .catch(() => {});
   initWebSocket();
 })();
 

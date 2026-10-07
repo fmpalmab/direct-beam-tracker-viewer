@@ -33,6 +33,7 @@ from .models import (
     TargetRequest,
 )
 from .poller import StatusPoller
+from .routine import RoutineRunner, RoutineState, generate_schedule, load_targets
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -49,17 +50,34 @@ def create_app(
     if client is None:
         client = TrackerClient(base_url=settings.kotekan_url)
 
+    routine: RoutineRunner | None = None
+    if settings.routine_enabled:
+        catalog = load_targets(settings.routine_targets_path)
+        schedule = generate_schedule(
+            catalog,
+            num_beams=settings.routine_num_beams,
+            step_minutes=settings.routine_step_minutes,
+        )
+        routine = RoutineRunner(client=client, schedule=schedule)
+
     if poller is None:
         poller = StatusPoller(
             client=client,
             interval=settings.poll_interval,
             spectrometer_interval=settings.spectrometer_interval,
+            beam_name_provider=routine.beam_names if routine is not None else None,
         )
+    elif routine is not None and poller.beam_name_provider is None:
+        poller.beam_name_provider = routine.beam_names
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await poller.start()
+        if routine is not None:
+            await routine.start()
         yield
+        if routine is not None:
+            await routine.stop()
         await poller.stop()
         await client.aclose()
 
@@ -72,6 +90,7 @@ def create_app(
     app.state.settings = settings
     app.state.client = client
     app.state.poller = poller
+    app.state.routine = routine
 
     # --- API Routes ---
 
@@ -119,6 +138,31 @@ def create_app(
                 status_code=404, detail=f"No spectrum data for beam {beam_id}"
             )
         return data.beams[beam_id]
+
+    @app.get("/api/routine", response_model=RoutineState)
+    async def get_routine() -> RoutineState:
+        """Return the current observation routine state (disabled stub if off)."""
+        if routine is None:
+            return RoutineState(enabled=False, num_beams=settings.routine_num_beams)
+        return routine.state()
+
+    @app.get("/api/routine/schedule")
+    async def get_routine_schedule() -> dict[str, object]:
+        """Return the full precomputed set-hour schedule."""
+        if routine is None:
+            raise HTTPException(status_code=404, detail="Routine not enabled")
+        return routine.schedule.model_dump()
+
+    @app.post("/api/routine/apply")
+    async def apply_routine_now() -> dict[str, object]:
+        """Force-apply the routine slot that is current right now."""
+        if routine is None:
+            raise HTTPException(status_code=404, detail="Routine not enabled")
+        try:
+            state = await routine.apply_current()
+        except TrackerError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+        return {"status": "ok", "state": state.model_dump()}
 
     @app.post("/api/beams/{beam_id}/target")
     async def steer_beam_target(
@@ -177,6 +221,13 @@ def create_app(
         await ws.accept()
         status_q = poller.subscribe()
         spec_q = poller.subscribe_spectrometer()
+        routine_q = routine.subscribe() if routine is not None else None
+
+        if routine is not None:
+            try:
+                await ws.send_json({"type": "routine", "data": routine.state().model_dump()})
+            except Exception:
+                pass
 
         latest = poller.latest()
         if latest is not None:
@@ -204,6 +255,11 @@ def create_app(
                 spec = await spec_q.get()
                 await ws.send_json({"type": "spectrometer", "data": spec.model_dump()})
 
+        async def push_routine() -> None:
+            while True:
+                state = await routine_q.get()
+                await ws.send_json({"type": "routine", "data": state.model_dump()})
+
         async def reader() -> None:
             try:
                 while True:
@@ -211,21 +267,20 @@ def create_app(
             except Exception:
                 pass
 
-        read_task = asyncio.create_task(reader())
-        status_task = asyncio.create_task(push_status())
-        spec_task = asyncio.create_task(push_spectrometer())
+        coros = [reader(), push_status(), push_spectrometer()]
+        if routine_q is not None:
+            coros.append(push_routine())
+        tasks = [asyncio.create_task(c) for c in coros]
 
         try:
-            await asyncio.wait(
-                [read_task, status_task, spec_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except (WebSocketDisconnect, ConnectionResetError, RuntimeError):
             pass
         finally:
-            read_task.cancel()
-            status_task.cancel()
-            spec_task.cancel()
+            for task in tasks:
+                task.cancel()
+            if routine_q is not None:
+                routine.unsubscribe(routine_q)
             poller.unsubscribe(status_q)
             poller.unsubscribe_spectrometer(spec_q)
 

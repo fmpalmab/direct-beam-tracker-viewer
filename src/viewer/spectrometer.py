@@ -153,8 +153,12 @@ class SpectrometerProcessor:
         buf_1: bytes | None,
         status: Status | None = None,
         max_beams: int = 2,
+        beam_names: dict[int, str] | None = None,
     ) -> SpectrometerData:
         """Process incoming raw buffers from Stream 0 and Stream 1.
+
+        ``beam_names`` optionally maps beam_id -> target label (set by the
+        observation routine); it overrides coordinate-based identification.
 
         Returns a SpectrometerData payload containing per-beam spectra and statistics.
         """
@@ -198,7 +202,7 @@ class SpectrometerProcessor:
 
         for b_idx in range(active_beams):
             beam_info = beam_info_map.get(b_idx)
-            target_name = identify_celestial_target(beam_info)
+            target_name = (beam_names or {}).get(b_idx) or identify_celestial_target(beam_info)
             label = f"Beam {b_idx}"
             if target_name:
                 label += f" ({target_name})"

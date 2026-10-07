@@ -102,6 +102,51 @@ Full tracker state.
 
 ---
 
+## Viewer Routine Endpoints (viewer REST, not kotekan)
+
+These are served by the viewer itself when started with `--routine`.
+
+### GET /api/routine
+
+Live routine state. `enabled: false` stub when the routine is off.
+
+```json
+{
+  "enabled": true,
+  "num_beams": 4,
+  "date_local": "2026-10-07",
+  "step_minutes": 60,
+  "current_slot": {
+    "time_local": "18:00",
+    "assignments": [
+      {"beam_id": 0, "label": "PSR J1644-4559", "ra_deg": 251.2, "dec_deg": -46.0, "altitude_deg": 75.7},
+      {"beam_id": 1, "label": "PKS B1934-638", "ra_deg": 294.85, "dec_deg": -63.71, "altitude_deg": 53.0},
+      {"beam_id": 2, "label": "Sgr A* / Galactic Center", "ra_deg": 266.42, "dec_deg": -29.01, "altitude_deg": 83.2},
+      {"beam_id": 3, "label": "3C 353", "ra_deg": 260.12, "dec_deg": -0.98, "altitude_deg": 57.6}
+    ]
+  },
+  "next_slot_time_local": "19:00",
+  "beam_names": {"0": "PSR J1644-4559", "1": "PKS B1934-638", "2": "Sgr A* / Galactic Center", "3": "3C 353"},
+  "last_applied_local": "2026-10-07 18:00:00",
+  "last_error": null
+}
+```
+
+### GET /api/routine/schedule
+
+Full precomputed set-hour table (same shape as `current_slot` per slot).
+`404` when the routine is off.
+
+### POST /api/routine/apply
+
+Force-apply the slot that is current right now (re-points all beams).
+`404` when the routine is off.
+
+### WebSocket `/ws`
+
+Routine state changes are pushed as `{"type": "routine", "data": <routine state>}`
+(the same payload as `GET /api/routine`); the latest state is sent on connect.
+
 ## Conventions (from CHARTS AGENTS.md §2.1)
 
 - Direction cosines `(l, m, n)`, `n = sqrt(1 - l^2 - m^2)`, ENU topocentric frame.

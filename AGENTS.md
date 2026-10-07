@@ -81,6 +81,16 @@ screen -dmS kotekan bash -c "echo 'FP_Charts123!' | sudo -S /home/fpalma/kotekan
 screen -dmS viewer bash -c "cd /home/fpalma/direct-beam-tracker-viewer && uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048 2>&1 | tee /home/fpalma/direct-beam-tracker-viewer/viewer.log"
 ```
 
+To run the precomputed observation routine (4 beams always on the 4
+highest-elevation verified targets, re-pointed at set hours), copy
+`tools/verified_targets.json` from the CHARTS workspace next to the viewer and
+add the routine flags:
+```bash
+screen -dmS viewer bash -c "cd /home/fpalma/direct-beam-tracker-viewer && uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048 --routine --routine-targets verified_targets.json 2>&1 | tee /home/fpalma/direct-beam-tracker-viewer/viewer.log"
+```
+The routine state is visible in the header badge, `GET /api/routine`, and the
+`routine` WebSocket stream; `POST /api/routine/apply` re-points immediately.
+
 #### Managing Screens
 * View active sessions: `screen -ls`
 * Attach to Kotekan log view: `screen -r kotekan` (Press `Ctrl+A, D` to detach without stopping)

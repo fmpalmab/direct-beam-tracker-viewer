@@ -6,7 +6,7 @@ import asyncio
 from collections import defaultdict, deque
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .client import TrackerClient
 from .models import BeamSample, SpectrometerData, Status
@@ -30,12 +30,15 @@ class StatusPoller:
         spectrometer_interval: float = 1.0,
         history: int = 600,
         spectrometer_processor: SpectrometerProcessor | None = None,
+        beam_name_provider: Callable[[], dict[int, str]] | None = None,
     ) -> None:
         self.client = client
         self.interval = max(0.2, interval)
         self.spectrometer_interval = max(0.2, spectrometer_interval)
         self.history_len = history
         self.spectrometer_processor = spectrometer_processor or SpectrometerProcessor()
+        # Optional beam_id -> target label map (e.g. from the observation routine)
+        self.beam_name_provider = beam_name_provider
 
         self._latest: Status | None = None
         self._latest_spectrometer: SpectrometerData | None = None
@@ -164,6 +167,7 @@ class StatusPoller:
                     buf_1=buf_1,
                     status=self._latest,
                     max_beams=self._latest.num_active_beams if self._latest else 2,
+                    beam_names=self.beam_name_provider() if self.beam_name_provider else None,
                 )
                 self._latest_spectrometer = spec_data
 

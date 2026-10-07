@@ -16,6 +16,38 @@ The viewer lets an operator:
 Designed to be **gentle on the processing node**: a single server-side poller
 queries kotekan at 2 Hz and fans out to any number of browsers over WebSocket.
 
+## Observation routine
+
+`--routine` runs a precomputed observation script on top of the tracker:
+**4 output beams, always owned by the 4 highest-elevation targets** from the
+verified catalog (`tools/verified_targets.json`, 25 SIMBAD-verified sources
+for the Carén site). No live sky math at observation time — the set-hour
+schedule is generated once at startup from the catalog's transit times, and a
+background task only fires REST calls when the wall clock crosses each slot:
+
+```bash
+uv run viewer --kotekan http://localhost:12048 --port 8088 \
+  --routine --routine-targets ../tools/verified_targets.json
+```
+
+- At each set hour (default 60 min steps) every beam is re-pointed via
+  `POST /direct_tracker/set_celestial_target` and the beam name map
+  (`beam_id -> target`) is updated and pushed to the UI over WebSocket.
+- Beam assignments are stable between slots: a target keeps its beam until it
+  drops out of the top 4; newcomers take freed beams.
+- Kotekan converts RA/Dec to direction cosines once per command, so each slot
+  re-point also refreshes tracking; use `--routine-step-minutes 30` to halve
+  the between-slot drift.
+- The schedule is valid for the catalog's date (`2026-10-07`); transit times
+drift ~4 min/day with the sidereal rate — regenerate
+`tools/verified_targets.json` for other dates.
+- If kotekan is down, the runner retries every 30 s and surfaces the error in
+  the header badge and `GET /api/routine`.
+
+Routine endpoints: `GET /api/routine` (live state),
+`GET /api/routine/schedule` (full set-hour table), `POST /api/routine/apply`
+(force re-point now) — see [docs/API.md](docs/API.md).
+
 ## Quick start (uv)
 
 ```bash
