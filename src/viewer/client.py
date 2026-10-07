@@ -56,6 +56,17 @@ class TrackerClient:
             raise TrackerError(resp.status_code, resp.text)
         return Status.model_validate(resp.json())
 
+    async def get_inspect_frame(self, buffer_name: str) -> bytes | None:
+        """Fetch raw binary frame snapshot: GET /inspect_frame/{buffer_name}."""
+        try:
+            resp = await self._client.get(f"/inspect_frame/{buffer_name}")
+            if resp.status_code == 200:
+                return resp.content
+            return None
+        except Exception as exc:
+            logger.debug("Failed to fetch inspect frame %s: %s", buffer_name, exc)
+            return None
+
     async def set_target(self, req: TargetRequest) -> str:
         """Steer a beam by direction cosines: POST /direct_tracker/set_target."""
         data = {

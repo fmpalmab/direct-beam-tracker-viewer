@@ -13,6 +13,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8088
     poll_interval: float = 0.5
+    spectrometer_interval: float = 1.0
 
 
 def parse_args(args: list[str] | None = None) -> Settings:
@@ -44,14 +45,23 @@ def parse_args(args: list[str] | None = None) -> Settings:
         default=float(os.environ.get("VIEWER_POLL_INTERVAL", "0.5")),
         help="Kotekan status polling interval in seconds (default: 0.5, floor: 0.2)",
     )
+    parser.add_argument(
+        "--spectrometer-interval",
+        dest="spectrometer_interval",
+        type=float,
+        default=float(os.environ.get("VIEWER_SPECTROMETER_INTERVAL", "1.0")),
+        help="Line spectrometer polling cadence in seconds (default: 1.0, floor: 0.2)",
+    )
 
     parsed = parser.parse_args(args)
     # Floor at 0.2 s — never faster to prevent overloading kotekan
     poll_interval = max(0.2, float(parsed.poll_interval))
+    spectrometer_interval = max(0.2, float(parsed.spectrometer_interval))
 
     return Settings(
         kotekan_url=parsed.kotekan_url.rstrip("/"),
         host=parsed.host,
         port=parsed.port,
         poll_interval=poll_interval,
+        spectrometer_interval=spectrometer_interval,
     )

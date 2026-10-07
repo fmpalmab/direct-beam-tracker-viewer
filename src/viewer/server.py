@@ -23,10 +23,12 @@ from .client import TrackerClient, TrackerError
 from .config import Settings, parse_args
 from .models import (
     BeamSample,
+    BeamSpectrum,
     CelestialRequest,
     EnableBeamsRequest,
     InterpolationRequest,
     MaskAntennaRequest,
+    SpectrometerData,
     Status,
     TargetRequest,
 )
@@ -51,6 +53,7 @@ def create_app(
         poller = StatusPoller(
             client=client,
             interval=settings.poll_interval,
+            spectrometer_interval=settings.spectrometer_interval,
         )
 
     @asynccontextmanager
@@ -93,8 +96,29 @@ def create_app(
         return {
             "kotekan_reachable": poller.healthy,
             "poll_interval_s": poller.interval,
+            "spectrometer_interval_s": poller.spectrometer_interval,
             "uptime_s": round(poller.uptime_s, 1),
         }
+
+    @app.get("/api/spectrometer", response_model=SpectrometerData)
+    async def get_spectrometer() -> SpectrometerData:
+        """Return the latest line spectrometer data for output formed beams (1 Hz)."""
+        data = poller.spectrometer_latest()
+        if data is None:
+            raise HTTPException(
+                status_code=503, detail="No spectrometer data available yet from kotekan"
+            )
+        return data
+
+    @app.get("/api/spectrometer/{beam_id}", response_model=BeamSpectrum)
+    async def get_beam_spectrum(beam_id: int = PathParam(..., ge=0, le=7)) -> BeamSpectrum:
+        """Return the line spectrum for a specific output beam."""
+        data = poller.spectrometer_latest()
+        if data is None or beam_id not in data.beams:
+            raise HTTPException(
+                status_code=404, detail=f"No spectrum data for beam {beam_id}"
+            )
+        return data.beams[beam_id]
 
     @app.post("/api/beams/{beam_id}/target")
     async def steer_beam_target(
@@ -149,17 +173,36 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_updates(ws: WebSocket) -> None:
-        """Stream tracker status updates to connected browsers."""
+        """Stream tracker status and spectrometer updates to connected browsers."""
         await ws.accept()
-        q = poller.subscribe()
+        status_q = poller.subscribe()
+        spec_q = poller.subscribe_spectrometer()
 
         latest = poller.latest()
         if latest is not None:
             try:
                 await ws.send_text(latest.model_dump_json())
             except Exception:
-                poller.unsubscribe(q)
+                poller.unsubscribe(status_q)
+                poller.unsubscribe_spectrometer(spec_q)
                 return
+
+        latest_spec = poller.spectrometer_latest()
+        if latest_spec is not None:
+            try:
+                await ws.send_json({"type": "spectrometer", "data": latest_spec.model_dump()})
+            except Exception:
+                pass
+
+        async def push_status() -> None:
+            while True:
+                status = await status_q.get()
+                await ws.send_text(status.model_dump_json())
+
+        async def push_spectrometer() -> None:
+            while True:
+                spec = await spec_q.get()
+                await ws.send_json({"type": "spectrometer", "data": spec.model_dump()})
 
         async def reader() -> None:
             try:
@@ -169,15 +212,22 @@ def create_app(
                 pass
 
         read_task = asyncio.create_task(reader())
+        status_task = asyncio.create_task(push_status())
+        spec_task = asyncio.create_task(push_spectrometer())
+
         try:
-            while True:
-                status = await q.get()
-                await ws.send_text(status.model_dump_json())
+            await asyncio.wait(
+                [read_task, status_task, spec_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         except (WebSocketDisconnect, ConnectionResetError, RuntimeError):
             pass
         finally:
             read_task.cancel()
-            poller.unsubscribe(q)
+            status_task.cancel()
+            spec_task.cancel()
+            poller.unsubscribe(status_q)
+            poller.unsubscribe_spectrometer(spec_q)
 
     # --- Static File Serving ---
 

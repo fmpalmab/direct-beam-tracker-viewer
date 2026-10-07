@@ -104,3 +104,29 @@ async def test_subscriber_queue_overflow_protection(sample_status: Status) -> No
     # Queue size should be capped without hanging or raising QueueFull
     assert q.qsize() <= 15
     poller.unsubscribe(q)
+
+
+@pytest.mark.asyncio
+async def test_spectrometer_poller_and_broadcast(sample_status: Status) -> None:
+    client = AsyncMock(spec=TrackerClient)
+    client.get_status.return_value = sample_status
+    client.get_inspect_frame.return_value = None  # Will use synthetic generator
+
+    poller = StatusPoller(
+        client=client,
+        interval=0.2,
+        spectrometer_interval=0.2,
+        history=5,
+    )
+    spec_q = poller.subscribe_spectrometer()
+
+    assert poller.spectrometer_latest() is None
+
+    await poller.start()
+    spec_item = await asyncio.wait_for(spec_q.get(), timeout=1.0)
+    assert spec_item is not None
+    assert spec_item.num_channels == 672
+    assert poller.spectrometer_latest() is not None
+
+    poller.unsubscribe_spectrometer(spec_q)
+    await poller.stop()

@@ -11,6 +11,7 @@ The viewer lets an operator:
 - Steer any beam by direction cosines or by RA/Dec celestial target.
 - Enable/disable beams, mask/unmask antennas, toggle phase interpolation.
 - Plot beam pointings on a sky (l, m) map with recent trails.
+- Inspect the real-time line spectrometer of the output formed beams (Power in dB vs Frequency in MHz) at 1 Hz cadence, matching the CHARTS F-Engine web dashboard with interactive zoom, crosshair, and peak tracking.
 
 Designed to be **gentle on the processing node**: a single server-side poller
 queries kotekan at 2 Hz and fans out to any number of browsers over WebSocket.

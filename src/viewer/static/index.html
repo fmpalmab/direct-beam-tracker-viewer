@@ -24,18 +24,49 @@
   </header>
 
   <main class="main-layout">
-    <!-- Left Column: Sky Map -->
-    <section class="panel map-panel">
-      <div class="panel-header">
-        <h2>Topocentric Sky Map (l, m)</h2>
-        <div class="map-legend" id="map-legend"></div>
+    <!-- Left Column: Sky Map & Line Spectrometer -->
+    <section class="panel-column left-column">
+      <div class="panel map-panel">
+        <div class="panel-header">
+          <h2>Topocentric Sky Map (l, m)</h2>
+          <div class="map-legend" id="map-legend"></div>
+        </div>
+        <div class="canvas-container">
+          <canvas id="sky-canvas" width="600" height="600"></canvas>
+        </div>
+        <div class="map-footer">
+          <span>Projection: Polar $(l, m)$ in ENU topocentric frame</span>
+          <span id="cursor-coords">l: -- , m: --</span>
+        </div>
       </div>
-      <div class="canvas-container">
-        <canvas id="sky-canvas" width="600" height="600"></canvas>
-      </div>
-      <div class="map-footer">
-        <span>Projection: Polar $(l, m)$ in ENU topocentric frame</span>
-        <span id="cursor-coords">l: -- , m: --</span>
+
+      <!-- Output Beams Line Spectrometer (1 Hz) -->
+      <div class="panel spectrometer-panel" id="spectrometer-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Output Beams Spectrometer</h2>
+            <span class="cadence-badge" id="spec-cadence-badge">1.0 s</span>
+          </div>
+          <div class="spec-header-controls">
+            <div class="view-select-group">
+              <label for="spec-view-select">View:</label>
+              <select id="spec-view-select" class="spec-select">
+                <option value="all">Overlay All Beams</option>
+              </select>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="spec-reset-zoom-btn" title="Reset Axis Zoom">Reset Zoom</button>
+          </div>
+        </div>
+        <div class="spec-readout-bar">
+          <span id="spec-cursor-readout">Hover cursor on chart to inspect frequency and beam power</span>
+        </div>
+        <div class="canvas-container spec-canvas-container">
+          <canvas id="spectrometer-canvas" width="600" height="260"></canvas>
+        </div>
+        <div class="spec-footer" id="spec-footer">
+          <div class="spec-legend" id="spec-legend"></div>
+          <div class="spec-stats" id="spec-stats"></div>
+        </div>
       </div>
     </section>
 

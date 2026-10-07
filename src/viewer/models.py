@@ -42,6 +42,26 @@ class BeamSample(BaseModel):
     m0: float
 
 
+class BeamSpectrum(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    beam_id: int
+    label: str
+    target_name: str | None = None
+    frequencies_mhz: list[float] = Field(default_factory=list)
+    power_db: list[float] = Field(default_factory=list)
+    stats: dict[str, float] = Field(default_factory=dict)
+
+
+class SpectrometerData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: float
+    cadence_s: float = 1.0
+    num_channels: int = 672
+    beams: dict[int, BeamSpectrum] = Field(default_factory=dict)
+
+
 class TargetRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

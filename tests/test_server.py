@@ -142,9 +142,59 @@ def test_websocket_streaming(app_and_poller) -> None:
             assert data["beams"][0]["beam_id"] == 0
 
 
+def test_websocket_spectrometer_streaming(app_and_poller) -> None:
+    app, poller = app_and_poller
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # First message: status
+            m1 = ws.receive_json()
+            assert "num_active_beams" in m1
+            # Next message: either spectrometer or subsequent status
+            m2 = ws.receive_json()
+            if m2.get("type") == "spectrometer":
+                assert "beams" in m2["data"]
+            else:
+                assert "num_active_beams" in m2
+
+
 def test_static_index(app_and_poller) -> None:
     app, _ = app_and_poller
     with TestClient(app) as client:
         res = client.get("/")
         assert res.status_code == 200
         assert "Direct Beam Tracker" in res.text
+
+
+def test_spectrometer_endpoint(app_and_poller) -> None:
+    app, poller = app_and_poller
+    with TestClient(app) as client:
+        # Poller lifespan starts and computes spectrometer
+        res = client.get("/api/spectrometer")
+        assert res.status_code == 200
+        data = res.json()
+        assert "num_channels" in data
+        assert data["num_channels"] == 672
+        assert "beams" in data
+        assert "0" in data["beams"]
+
+        # Single beam endpoint
+        res_beam = client.get("/api/spectrometer/0")
+        assert res_beam.status_code == 200
+        b0 = res_beam.json()
+        assert b0["beam_id"] == 0
+        assert len(b0["power_db"]) == 672
+        assert "stats" in b0
+
+        # Non-existent beam -> 404
+        res_missing = client.get("/api/spectrometer/7")
+        assert res_missing.status_code == 404
+
+
+def test_health_includes_spectrometer_interval(app_and_poller) -> None:
+    app, _ = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/health")
+        assert res.status_code == 200
+        data = res.json()
+        assert "spectrometer_interval_s" in data
+        assert data["spectrometer_interval_s"] >= 0.2
