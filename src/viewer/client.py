@@ -44,9 +44,7 @@ class TrackerClient:
         try:
             return await self._client.request(method, path, **kwargs)
         except httpx.ConnectError:
-            logger.warning(
-                "Connection failed on %s %s, retrying once...", method, path
-            )
+            logger.warning("Connection failed on %s %s, retrying once...", method, path)
             return await self._client.request(method, path, **kwargs)
 
     async def get_status(self) -> Status:

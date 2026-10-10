@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import pytest
@@ -58,16 +57,12 @@ def dense_catalog_path(tmp_path) -> Path:
 
 
 def test_altitude_at_transit_reaches_max_altitude() -> None:
-    tgt = RoutineTarget(
-        label="x", ra_deg=0.0, dec_deg=LAT_DEG, transit_local="05:00"
-    )
+    tgt = RoutineTarget(label="x", ra_deg=0.0, dec_deg=LAT_DEG, transit_local="05:00")
     assert altitude_deg(tgt, LAT_DEG, 5.0) == pytest.approx(90.0, abs=1e-6)
 
 
 def test_altitude_symmetric_around_transit() -> None:
-    tgt = RoutineTarget(
-        label="x", ra_deg=0.0, dec_deg=LAT_DEG, transit_local="12:00"
-    )
+    tgt = RoutineTarget(label="x", ra_deg=0.0, dec_deg=LAT_DEG, transit_local="12:00")
     before = altitude_deg(tgt, LAT_DEG, 10.0)
     after = altitude_deg(tgt, LAT_DEG, 14.0)
     assert before == pytest.approx(after, abs=1e-9)
@@ -112,8 +107,10 @@ def test_schedule_assigns_four_highest_targets(dense_catalog_path) -> None:
             t.label: altitude_deg(t, catalog.site_lat_deg, t_hours)
             for t in catalog.targets
         }
-        visible = [(a, l) for l, a in alts.items() if a >= catalog.elevation_mask_deg]
-        best = {l for _, l in sorted(visible, key=lambda x: (-x[0], x[1]))[:4]}
+        visible = [
+            (alt, lbl) for lbl, alt in alts.items() if alt >= catalog.elevation_mask_deg
+        ]
+        best = {lbl for _, lbl in sorted(visible, key=lambda x: (-x[0], x[1]))[:4]}
         assert {a.label for a in slot.assignments} == best
         for a in slot.assignments:
             assert a.altitude_deg == pytest.approx(alts[a.label], abs=0.01)
@@ -166,9 +163,7 @@ async def test_runner_applies_current_slot(
 
     # kotekan received the beam count and every celestial target
     assert mock_backend.num_active_beams == 4
-    assert runner.names == {
-        a.beam_id: a.label for a in state.current_slot.assignments
-    }
+    assert runner.names == {a.beam_id: a.label for a in state.current_slot.assignments}
     for a in state.current_slot.assignments:
         beam = mock_backend.beams[a.beam_id]
         assert beam["celestial_target"]["is_set"] is True
@@ -206,7 +201,9 @@ def make_routine_settings(catalog_path: Path) -> Settings:
 def test_routine_endpoints(mock_client, mock_backend, dense_catalog_path) -> None:
     from starlette.testclient import TestClient
 
-    app = create_app(settings=make_routine_settings(dense_catalog_path), client=mock_client)
+    app = create_app(
+        settings=make_routine_settings(dense_catalog_path), client=mock_client
+    )
     assert app.state.poller.beam_name_provider == app.state.routine.beam_names
 
     with TestClient(app) as cli:

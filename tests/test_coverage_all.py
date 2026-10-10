@@ -14,7 +14,6 @@ from viewer.models import (
     CelestialRequest,
     EnableBeamsRequest,
     MaskAntennaRequest,
-    InterpolationRequest,
 )
 from viewer.poller import StatusPoller
 from viewer.server import create_app
@@ -57,7 +56,9 @@ async def test_client_error_handling():
         await client.set_target(TargetRequest(beam_id=0))
 
     with pytest.raises(TrackerError):
-        await client.set_celestial_target(CelestialRequest(beam_id=0, ra_deg=0, dec_deg=0))
+        await client.set_celestial_target(
+            CelestialRequest(beam_id=0, ra_deg=0, dec_deg=0)
+        )
 
     with pytest.raises(TrackerError):
         await client.set_num_active_beams(1)
@@ -103,6 +104,7 @@ def test_models_validation_errors():
     with pytest.raises(ValidationError):
         MaskAntennaRequest(antenna_id=-1, enabled=True)
 
+
 def test_models_aliases():
     req = TargetRequest(l=0.1, m=0.2)
     assert req.l0 == 0.1
@@ -125,14 +127,18 @@ async def test_poller_corner_cases(mock_status):
 
     # queue full/empty coverage
     q = poller.subscribe()
+
     async def mock_put_nowait(*args, **kwargs):
         raise asyncio.QueueFull()
+
     q.put_nowait = mock_put_nowait
     poller._broadcast(mock_status)
 
     q.qsize = lambda: 10
+
     async def mock_get_nowait():
         raise asyncio.QueueEmpty()
+
     q.get_nowait = mock_get_nowait
     poller._broadcast(mock_status)
 
@@ -156,20 +162,26 @@ def test_server_error_passthrough(mock_settings):
         res = test_client.post("/api/beams/0/target", json={"l0": 0.1, "m0": 0.1})
         assert res.status_code == 400
 
-        res = test_client.post("/api/beams/0/celestial", json={"ra_deg": 10.0, "dec_deg": 10.0})
+        res = test_client.post(
+            "/api/beams/0/celestial", json={"ra_deg": 10.0, "dec_deg": 10.0}
+        )
         assert res.status_code == 400
 
         res = test_client.post("/api/beams/enable", json={"num_active_beams": 4})
         assert res.status_code == 400
 
-        res = test_client.post("/api/antennas/mask", json={"antenna_id": 1, "enabled": True})
+        res = test_client.post(
+            "/api/antennas/mask", json={"antenna_id": 1, "enabled": True}
+        )
         assert res.status_code == 400
 
         res = test_client.post("/api/interpolation", json={"enabled": True})
         assert res.status_code == 400
 
+
 def test_server_creation_defaults():
     import os
+
     env = {
         "KOTEKAN_URL": "http://env-host:12048",
         "VIEWER_HOST": "192.168.1.100",
@@ -180,16 +192,22 @@ def test_server_creation_defaults():
         app = create_app()
         assert app.state.settings.kotekan_url == "http://env-host:12048"
 
+
 def test_server_ws_mock(mock_settings, mock_status):
     app = create_app(settings=mock_settings)
     app.state.poller._latest = mock_status
-    with patch("starlette.websockets.WebSocket.send_text", side_effect=Exception("mocked err")):
+    with patch(
+        "starlette.websockets.WebSocket.send_text", side_effect=Exception("mocked err")
+    ):
         with TestClient(app) as client:
             with client.websocket_connect("/ws"):
                 pass
 
     app.state.poller._latest = None
-    with patch("starlette.websockets.WebSocket.receive_text", side_effect=Exception("mocked err")):
+    with patch(
+        "starlette.websockets.WebSocket.receive_text",
+        side_effect=Exception("mocked err"),
+    ):
         with TestClient(app) as client:
             with client.websocket_connect("/ws"):
                 pass
@@ -198,6 +216,7 @@ def test_server_ws_mock(mock_settings, mock_status):
         with TestClient(app) as client:
             with client.websocket_connect("/ws"):
                 pass
+
 
 def test_poller_cancel_loop():
     client = AsyncMock(spec=TrackerClient)
@@ -211,18 +230,22 @@ def test_poller_cancel_loop():
 
     asyncio.run(run_poller())
 
+
 # --- __main__.py ---
 def test_main_cli():
     import sys
+
     test_args = ["viewer", "--port", "12345"]
-    with patch.object(sys, 'argv', test_args):
-        with patch('uvicorn.run') as mock_run:
+    with patch.object(sys, "argv", test_args):
+        with patch("uvicorn.run") as mock_run:
             viewer.__main__.main()
             mock_run.assert_called_once()
+
 
 @pytest.mark.asyncio
 async def test_poller_queue_full_empty():
     from unittest.mock import Mock
+
     client = AsyncMock(spec=TrackerClient)
     poller = StatusPoller(client=client, interval=0.1)
     q = poller.subscribe()
