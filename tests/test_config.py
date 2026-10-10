@@ -17,10 +17,14 @@ def test_default_config() -> None:
 
 def test_cli_overrides() -> None:
     args = [
-        "--kotekan", "http://gpu-node:12048/",
-        "--host", "0.0.0.0",
-        "--port", "9000",
-        "--poll-interval", "1.0",
+        "--kotekan",
+        "http://gpu-node:12048/",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "9000",
+        "--poll-interval",
+        "1.0",
     ]
     settings = parse_args(args)
     assert settings.kotekan_url == "http://gpu-node:12048"

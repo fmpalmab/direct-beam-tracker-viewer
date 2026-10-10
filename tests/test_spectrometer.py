@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import math
 import numpy as np
-import pytest
 
 from viewer.models import BeamInfo, CelestialTarget, Status
 from viewer.spectrometer import (
     CHANNELS_PER_STREAM,
-    FREQ_START_0_MHZ,
-    FREQ_START_1_MHZ,
-    FREQUENCIES_0_MHZ,
-    FREQUENCIES_1_MHZ,
-    FREQUENCIES_ALL_MHZ,
     TOTAL_CHANNELS,
     SpectrometerProcessor,
     compute_power_spectrum,
@@ -61,13 +55,17 @@ def test_compute_power_and_db() -> None:
 def test_target_identification() -> None:
     b0 = BeamInfo(
         beam_id=0,
-        celestial_target=CelestialTarget(is_set=True, ra_deg=266.4168, dec_deg=-29.0078),
+        celestial_target=CelestialTarget(
+            is_set=True, ra_deg=266.4168, dec_deg=-29.0078
+        ),
     )
     assert identify_celestial_target(b0) == "Sagittarius A*"
 
     b1 = BeamInfo(
         beam_id=1,
-        celestial_target=CelestialTarget(is_set=True, ra_deg=128.8361, dec_deg=-45.1764),
+        celestial_target=CelestialTarget(
+            is_set=True, ra_deg=128.8361, dec_deg=-45.1764
+        ),
     )
     assert identify_celestial_target(b1) == "Vela Pulsar"
 
