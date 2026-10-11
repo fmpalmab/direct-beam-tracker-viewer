@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import httpx
 import pytest
 from starlette.testclient import TestClient
@@ -80,15 +79,21 @@ def test_celestial_validation_and_steer(app_and_poller) -> None:
     app, _ = app_and_poller
     with TestClient(app) as client:
         # 1. Invalid RA (< 0 or >= 360) -> 422
-        res = client.post("/api/beams/0/celestial", json={"ra_deg": 370.0, "dec_deg": 10.0})
+        res = client.post(
+            "/api/beams/0/celestial", json={"ra_deg": 370.0, "dec_deg": 10.0}
+        )
         assert res.status_code == 422
 
         # 2. Invalid Dec (<-90 or > 90) -> 422
-        res = client.post("/api/beams/0/celestial", json={"ra_deg": 180.0, "dec_deg": -95.0})
+        res = client.post(
+            "/api/beams/0/celestial", json={"ra_deg": 180.0, "dec_deg": -95.0}
+        )
         assert res.status_code == 422
 
         # 3. Valid celestial steer -> 200
-        res = client.post("/api/beams/0/celestial", json={"ra_deg": 83.63, "dec_deg": 22.01})
+        res = client.post(
+            "/api/beams/0/celestial", json={"ra_deg": 83.63, "dec_deg": 22.01}
+        )
         assert res.status_code == 200
         assert res.json()["status"] == "ok"
 
@@ -108,10 +113,14 @@ def test_enable_beams_and_controls(app_and_poller) -> None:
         assert res.status_code == 200
 
         # Antenna mask
-        res = client.post("/api/antennas/mask", json={"antenna_id": -1, "enabled": True})
+        res = client.post(
+            "/api/antennas/mask", json={"antenna_id": -1, "enabled": True}
+        )
         assert res.status_code == 422
 
-        res = client.post("/api/antennas/mask", json={"antenna_id": 3, "enabled": False})
+        res = client.post(
+            "/api/antennas/mask", json={"antenna_id": 3, "enabled": False}
+        )
         assert res.status_code == 200
 
         # Interpolation

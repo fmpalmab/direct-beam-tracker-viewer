@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -73,7 +72,7 @@ class TargetRequest(BaseModel):
     dl: float | None = None
     dm: float | None = None
     # Support 'l' and 'm' as alternative field names
-    l: float | None = None
+    l: float | None = None  # noqa: E741
     m: float | None = None
 
     @model_validator(mode="before")
@@ -92,12 +91,12 @@ class TargetRequest(BaseModel):
             raise ValueError(f"beam_id must be between 0 and 7, got {self.beam_id}")
 
         if self.l0 is not None and self.m0 is not None:
-            r2 = self.l0 ** 2 + self.m0 ** 2
+            r2 = self.l0**2 + self.m0**2
             if r2 > 1.000001:
                 raise ValueError(f"l0^2 + m0^2 must be <= 1.0 (got {r2:.4f})")
 
         if self.l1 is not None and self.m1 is not None:
-            r2 = self.l1 ** 2 + self.m1 ** 2
+            r2 = self.l1**2 + self.m1**2
             if r2 > 1.000001:
                 raise ValueError(f"l1^2 + m1^2 must be <= 1.0 (got {r2:.4f})")
 

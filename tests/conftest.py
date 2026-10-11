@@ -10,8 +10,6 @@ import pytest
 
 from viewer.client import TrackerClient
 from viewer.config import Settings
-from viewer.poller import StatusPoller
-from viewer.server import create_app
 
 
 class MockKotekanBackend:
@@ -39,7 +37,7 @@ class MockKotekanBackend:
                 "beam_id": 1,
                 "l0": -0.3,
                 "m0": 0.4,
-                "n0": math.sqrt(max(0.0, 1.0 - (-0.3)**2 - 0.4**2)),
+                "n0": math.sqrt(max(0.0, 1.0 - (-0.3) ** 2 - 0.4**2)),
                 "grid_index": 200,
                 "celestial_target": {
                     "is_set": False,
@@ -93,7 +91,9 @@ class MockKotekanBackend:
             l0 = self.beams[beam_id]["l0"]
             m0 = self.beams[beam_id]["m0"]
             r2 = l0**2 + m0**2
-            self.beams[beam_id]["n0"] = math.sqrt(max(0.0, 1.0 - r2)) if r2 <= 1.0 else 0.0
+            self.beams[beam_id]["n0"] = (
+                math.sqrt(max(0.0, 1.0 - r2)) if r2 <= 1.0 else 0.0
+            )
             self.beams[beam_id]["celestial_target"] = {"is_set": False}
             return httpx.Response(200, text=f"Beam {beam_id} target updated")
 
@@ -124,7 +124,9 @@ class MockKotekanBackend:
             body = json.loads(request.content)
             n = body.get("num_active_beams", 1)
             self.num_active_beams = min(8, max(1, n))
-            return httpx.Response(200, text=f"Active beams set to {self.num_active_beams}")
+            return httpx.Response(
+                200, text=f"Active beams set to {self.num_active_beams}"
+            )
 
         if method == "POST" and path == "/direct_tracker/mask_antenna":
             body = json.loads(request.content)
@@ -155,7 +157,9 @@ def mock_backend() -> MockKotekanBackend:
 @pytest.fixture
 def mock_client(mock_backend: MockKotekanBackend) -> TrackerClient:
     transport = httpx.MockTransport(mock_backend.handler)
-    http_client = httpx.AsyncClient(transport=transport, base_url="http://mock-kotekan:12048")
+    http_client = httpx.AsyncClient(
+        transport=transport, base_url="http://mock-kotekan:12048"
+    )
     return TrackerClient(base_url="http://mock-kotekan:12048", client=http_client)
 
 
