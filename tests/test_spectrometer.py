@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import math
 import numpy as np
-import pytest
 
 from viewer.models import BeamInfo, CelestialTarget, Status
 from viewer.spectrometer import (
     CHANNELS_PER_STREAM,
-    FREQ_START_0_MHZ,
-    FREQ_START_1_MHZ,
-    FREQUENCIES_0_MHZ,
-    FREQUENCIES_1_MHZ,
-    FREQUENCIES_ALL_MHZ,
     TOTAL_CHANNELS,
     SpectrometerProcessor,
     compute_power_spectrum,

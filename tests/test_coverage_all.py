@@ -14,7 +14,6 @@ from viewer.models import (
     CelestialRequest,
     EnableBeamsRequest,
     MaskAntennaRequest,
-    InterpolationRequest,
 )
 from viewer.poller import StatusPoller
 from viewer.server import create_app

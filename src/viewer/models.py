@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -73,7 +72,7 @@ class TargetRequest(BaseModel):
     dl: float | None = None
     dm: float | None = None
     # Support 'l' and 'm' as alternative field names
-    l: float | None = None
+    l: float | None = None  # noqa: E741
     m: float | None = None
 
     @model_validator(mode="before")

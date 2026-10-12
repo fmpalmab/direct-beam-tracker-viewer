@@ -6,7 +6,7 @@ import asyncio
 from collections import defaultdict, deque
 import logging
 import time
-from typing import Any, Callable
+from typing import Callable
 
 from .client import TrackerClient
 from .models import BeamSample, SpectrometerData, Status

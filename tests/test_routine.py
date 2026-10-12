@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import pytest
@@ -112,8 +111,8 @@ def test_schedule_assigns_four_highest_targets(dense_catalog_path) -> None:
             t.label: altitude_deg(t, catalog.site_lat_deg, t_hours)
             for t in catalog.targets
         }
-        visible = [(a, l) for l, a in alts.items() if a >= catalog.elevation_mask_deg]
-        best = {l for _, l in sorted(visible, key=lambda x: (-x[0], x[1]))[:4]}
+        visible = [(a, lbl) for lbl, a in alts.items() if a >= catalog.elevation_mask_deg]
+        best = {lbl for _, lbl in sorted(visible, key=lambda x: (-x[0], x[1]))[:4]}
         assert {a.label for a in slot.assignments} == best
         for a in slot.assignments:
             assert a.altitude_deg == pytest.approx(alts[a.label], abs=0.01)

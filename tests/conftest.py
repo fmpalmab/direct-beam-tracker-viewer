@@ -10,8 +10,6 @@ import pytest
 
 from viewer.client import TrackerClient
 from viewer.config import Settings
-from viewer.poller import StatusPoller
-from viewer.server import create_app
 
 
 class MockKotekanBackend:
