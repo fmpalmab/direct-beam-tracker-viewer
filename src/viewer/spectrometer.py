@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Any
 
 import numpy as np
 
@@ -88,13 +87,19 @@ def identify_celestial_target(beam: BeamInfo | None) -> str:
     dec = beam.celestial_target.dec_deg or 0.0
 
     # Sagittarius A* / Galactic Center: RA ~ 266.42°, Dec ~ -29.01°
-    if math.isclose(ra, 266.4168, abs_tol=1.0) and math.isclose(dec, -29.0078, abs_tol=1.0):
+    if math.isclose(ra, 266.4168, abs_tol=1.0) and math.isclose(
+        dec, -29.0078, abs_tol=1.0
+    ):
         return "Sagittarius A*"
     # Vela Pulsar (PSR B0833-45): RA ~ 128.84°, Dec ~ -45.18°
-    if math.isclose(ra, 128.8361, abs_tol=1.0) and math.isclose(dec, -45.1764, abs_tol=1.0):
+    if math.isclose(ra, 128.8361, abs_tol=1.0) and math.isclose(
+        dec, -45.1764, abs_tol=1.0
+    ):
         return "Vela Pulsar"
     # Crab Pulsar (PSR B0531+21): RA ~ 83.63°, Dec ~ +22.01°
-    if math.isclose(ra, 83.6331, abs_tol=1.0) and math.isclose(dec, 22.0145, abs_tol=1.0):
+    if math.isclose(ra, 83.6331, abs_tol=1.0) and math.isclose(
+        dec, 22.0145, abs_tol=1.0
+    ):
         return "Crab Pulsar"
 
     return f"RA {ra:.2f}°, Dec {dec:.2f}°"
@@ -163,7 +168,9 @@ class SpectrometerProcessor:
         Returns a SpectrometerData payload containing per-beam spectra and statistics.
         """
         now = time.time()
-        num_active = status.num_active_beams if status and status.num_active_beams > 0 else 2
+        num_active = (
+            status.num_active_beams if status and status.num_active_beams > 0 else 2
+        )
         active_beams = max(1, min(num_active, 8))
         effective_max_beams = max(max_beams, active_beams)
 
@@ -202,7 +209,9 @@ class SpectrometerProcessor:
 
         for b_idx in range(active_beams):
             beam_info = beam_info_map.get(b_idx)
-            target_name = (beam_names or {}).get(b_idx) or identify_celestial_target(beam_info)
+            target_name = (beam_names or {}).get(b_idx) or identify_celestial_target(
+                beam_info
+            )
             label = f"Beam {b_idx}"
             if target_name:
                 label += f" ({target_name})"

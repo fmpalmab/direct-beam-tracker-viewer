@@ -125,12 +125,15 @@ def create_app(
         data = poller.spectrometer_latest()
         if data is None:
             raise HTTPException(
-                status_code=503, detail="No spectrometer data available yet from kotekan"
+                status_code=503,
+                detail="No spectrometer data available yet from kotekan",
             )
         return data
 
     @app.get("/api/spectrometer/{beam_id}", response_model=BeamSpectrum)
-    async def get_beam_spectrum(beam_id: int = PathParam(..., ge=0, le=7)) -> BeamSpectrum:
+    async def get_beam_spectrum(
+        beam_id: int = PathParam(..., ge=0, le=7),
+    ) -> BeamSpectrum:
         """Return the line spectrum for a specific output beam."""
         data = poller.spectrometer_latest()
         if data is None or beam_id not in data.beams:
@@ -225,7 +228,9 @@ def create_app(
 
         if routine is not None:
             try:
-                await ws.send_json({"type": "routine", "data": routine.state().model_dump()})
+                await ws.send_json(
+                    {"type": "routine", "data": routine.state().model_dump()}
+                )
             except Exception:
                 pass
 
@@ -241,7 +246,9 @@ def create_app(
         latest_spec = poller.spectrometer_latest()
         if latest_spec is not None:
             try:
-                await ws.send_json({"type": "spectrometer", "data": latest_spec.model_dump()})
+                await ws.send_json(
+                    {"type": "spectrometer", "data": latest_spec.model_dump()}
+                )
             except Exception:
                 pass
 

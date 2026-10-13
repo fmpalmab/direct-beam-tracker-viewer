@@ -131,7 +131,9 @@ def load_targets(path: str | Path) -> TargetCatalog:
                 ra_deg=float(t["ra_deg"]),
                 dec_deg=float(t["dec_deg"]),
                 transit_local=str(t["transit_local"]),
-                max_alt_deg=float(t["max_alt_deg"]) if t.get("max_alt_deg") is not None else None,
+                max_alt_deg=float(t["max_alt_deg"])
+                if t.get("max_alt_deg") is not None
+                else None,
             )
             for t in data["targets"]
         ],
@@ -181,8 +183,7 @@ def generate_schedule(
     for minutes in range(0, 24 * 60, step_minutes):
         t_hours = minutes / 60.0
         visible = [
-            (altitude_deg(t, catalog.site_lat_deg, t_hours), t)
-            for t in catalog.targets
+            (altitude_deg(t, catalog.site_lat_deg, t_hours), t) for t in catalog.targets
         ]
         visible = [(alt, t) for alt, t in visible if alt >= catalog.elevation_mask_deg]
         visible.sort(key=lambda pair: (-pair[0], pair[1].label))
@@ -311,10 +312,7 @@ class RoutineRunner:
 
     def _current_slot(self, now: datetime) -> tuple[RoutineSlot, datetime]:
         """Most recent slot occurrence at or before ``now`` (wraps midnight)."""
-        today = [
-            (self._occurrence(s, now), s)
-            for s in self.schedule.slots
-        ]
+        today = [(self._occurrence(s, now), s) for s in self.schedule.slots]
         past = [(occ, s) for occ, s in today if occ <= now]
         if past:
             occ, slot = max(past, key=lambda pair: pair[0])
@@ -349,7 +347,9 @@ class RoutineRunner:
     async def _apply_slot(self, slot: RoutineSlot) -> None:
         n = len(slot.assignments)
         if n == 0:
-            logger.warning("Routine slot %s has no targets above the mask", slot.time_local)
+            logger.warning(
+                "Routine slot %s has no targets above the mask", slot.time_local
+            )
             return
         if self._active_beams_set != n:
             reply = await self.client.set_num_active_beams(n)
@@ -361,8 +361,13 @@ class RoutineRunner:
             )
             logger.info(
                 "Routine %s: beam %d -> %s (RA %.4f, Dec %.4f, alt %.1f deg) %s",
-                slot.time_local, a.beam_id, a.label, a.ra_deg, a.dec_deg,
-                a.altitude_deg, reply.strip(),
+                slot.time_local,
+                a.beam_id,
+                a.label,
+                a.ra_deg,
+                a.dec_deg,
+                a.altitude_deg,
+                reply.strip(),
             )
         self.names = {a.beam_id: a.label for a in slot.assignments}
         self.last_applied_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -378,8 +383,10 @@ class RoutineRunner:
         self._task = asyncio.create_task(self._run_loop(), name="routine-runner")
         logger.info(
             "Routine started: %d beams, %d slots (%d min step) for %s",
-            self.schedule.num_beams, len(self.schedule.slots),
-            self.schedule.step_minutes, self.schedule.date_local,
+            self.schedule.num_beams,
+            len(self.schedule.slots),
+            self.schedule.step_minutes,
+            self.schedule.date_local,
         )
 
     async def stop(self) -> None:
@@ -407,7 +414,9 @@ class RoutineRunner:
                 except Exception as exc:
                     self._failed = True
                     self.last_error = f"{type(exc).__name__}: {exc}"
-                    logger.warning("Routine apply failed at %s: %s", slot.time_local, exc)
+                    logger.warning(
+                        "Routine apply failed at %s: %s", slot.time_local, exc
+                    )
 
             now = datetime.now()
             delay = (self._next_boundary(now) - now).total_seconds()

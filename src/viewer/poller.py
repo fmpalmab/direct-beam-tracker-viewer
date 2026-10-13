@@ -6,7 +6,7 @@ import asyncio
 from collections import defaultdict, deque
 import logging
 import time
-from typing import Any, Callable
+from typing import Callable
 
 from .client import TrackerClient
 from .models import BeamSample, SpectrometerData, Status
@@ -158,8 +158,12 @@ class StatusPoller:
             t0 = time.monotonic()
             try:
                 # 1. Fetch inspection frames from both streams
-                buf_0 = await self.client.get_inspect_frame("host_formed_beams_buffer_0")
-                buf_1 = await self.client.get_inspect_frame("host_formed_beams_buffer_1")
+                buf_0 = await self.client.get_inspect_frame(
+                    "host_formed_beams_buffer_0"
+                )
+                buf_1 = await self.client.get_inspect_frame(
+                    "host_formed_beams_buffer_1"
+                )
 
                 # 2. Process into calibrated power spectra
                 spec_data = self.spectrometer_processor.process(
@@ -167,7 +171,9 @@ class StatusPoller:
                     buf_1=buf_1,
                     status=self._latest,
                     max_beams=self._latest.num_active_beams if self._latest else 2,
-                    beam_names=self.beam_name_provider() if self.beam_name_provider else None,
+                    beam_names=self.beam_name_provider()
+                    if self.beam_name_provider
+                    else None,
                 )
                 self._latest_spectrometer = spec_data
 
