@@ -37,7 +37,7 @@ def test_status_endpoint_returns_503_when_no_status(test_settings: Settings) -> 
 
 
 def test_status_endpoint_success(app_and_poller) -> None:
-    app, poller = app_and_poller
+    app, _poller = app_and_poller
     with TestClient(app) as client:
         # Poller starts on lifespan and immediately fetches from mock
         res = client.get("/api/status")
@@ -48,7 +48,7 @@ def test_status_endpoint_success(app_and_poller) -> None:
 
 
 def test_health_endpoint(app_and_poller) -> None:
-    app, poller = app_and_poller
+    app, _poller = app_and_poller
     with TestClient(app) as client:
         res = client.get("/api/health")
         assert res.status_code == 200
@@ -65,8 +65,8 @@ def test_target_validation_and_steer(app_and_poller) -> None:
         res = client.post("/api/beams/0/target", json={"l0": 0.9, "m0": 0.9})
         assert res.status_code == 422
 
-        # 2. Invalid beam_id -> 422
-        res = client.post("/api/beams/9/target", json={"l0": 0.1, "m0": 0.2})
+        # 2. Invalid beam_id (> 15) -> 422
+        res = client.post("/api/beams/16/target", json={"l0": 0.1, "m0": 0.2})
         assert res.status_code == 422
 
         # 3. Valid steer -> 200
@@ -129,7 +129,7 @@ def test_enable_beams_and_controls(app_and_poller) -> None:
 
 
 def test_history_endpoint(app_and_poller) -> None:
-    app, poller = app_and_poller
+    app, _poller = app_and_poller
     with TestClient(app) as client:
         # Poller runs in lifespan, populating history
         res = client.get("/api/history?beam_id=0")
@@ -142,28 +142,26 @@ def test_history_endpoint(app_and_poller) -> None:
 
 
 def test_websocket_streaming(app_and_poller) -> None:
-    app, poller = app_and_poller
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws:
-            # Receives status immediately on connect
-            data = ws.receive_json()
-            assert data["num_active_beams"] == 2
-            assert data["beams"][0]["beam_id"] == 0
+    app, _poller = app_and_poller
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        # Receives status immediately on connect
+        data = ws.receive_json()
+        assert data["num_active_beams"] == 2
+        assert data["beams"][0]["beam_id"] == 0
 
 
 def test_websocket_spectrometer_streaming(app_and_poller) -> None:
-    app, poller = app_and_poller
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws:
-            # First message: status
-            m1 = ws.receive_json()
-            assert "num_active_beams" in m1
-            # Next message: either spectrometer or subsequent status
-            m2 = ws.receive_json()
-            if m2.get("type") == "spectrometer":
-                assert "beams" in m2["data"]
-            else:
-                assert "num_active_beams" in m2
+    app, _poller = app_and_poller
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        # First message: status
+        m1 = ws.receive_json()
+        assert "num_active_beams" in m1
+        # Next message: either spectrometer or subsequent status
+        m2 = ws.receive_json()
+        if m2.get("type") == "spectrometer":
+            assert "beams" in m2["data"]
+        else:
+            assert "num_active_beams" in m2
 
 
 def test_static_index(app_and_poller) -> None:
@@ -175,7 +173,7 @@ def test_static_index(app_and_poller) -> None:
 
 
 def test_spectrometer_endpoint(app_and_poller) -> None:
-    app, poller = app_and_poller
+    app, _poller = app_and_poller
     with TestClient(app) as client:
         # Poller lifespan starts and computes spectrometer
         res = client.get("/api/spectrometer")

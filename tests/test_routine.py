@@ -119,7 +119,7 @@ def test_schedule_assigns_four_highest_targets(dense_catalog_path) -> None:
 def test_schedule_beam_assignment_is_stable(dense_catalog_path) -> None:
     sched = generate_schedule(load_targets(dense_catalog_path), num_beams=4)
 
-    for prev, cur in zip(sched.slots, sched.slots[1:]):
+    for prev, cur in zip(sched.slots, sched.slots[1:], strict=False):
         prev_beams = {a.label: a.beam_id for a in prev.assignments}
         for a in cur.assignments:
             if a.label in prev_beams:
@@ -321,4 +321,3 @@ async def test_10beam_runner_apply(mock_client, mock_backend) -> None:
     assert state.last_applied_local is not None
     assert mock_backend.num_active_beams == len(state.current_slot.assignments)
     assert len(runner.beam_names()) == len(state.current_slot.assignments)
-

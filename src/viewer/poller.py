@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict, deque
 import logging
 import time
-from typing import Callable
+from collections import defaultdict, deque
+from collections.abc import Callable
 
 from .client import TrackerClient
 from .models import BeamSample, SpectrometerData, Status

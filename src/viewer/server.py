@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-import sys
-from typing import AsyncIterator
 
+import uvicorn
 from fastapi import (
     FastAPI,
     HTTPException,
-    Path as PathParam,
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi import (
+    Path as PathParam,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-import uvicorn
 
 from .client import TrackerClient, TrackerError
 from .config import Settings, parse_args
@@ -133,7 +135,7 @@ def create_app(
 
     @app.get("/api/spectrometer/{beam_id}", response_model=BeamSpectrum)
     async def get_beam_spectrum(
-        beam_id: int = PathParam(..., ge=0, le=7),
+        beam_id: int = PathParam(..., ge=0, le=15),
     ) -> BeamSpectrum:
         """Return the line spectrum for a specific output beam."""
         data = poller.spectrometer_latest()
@@ -165,12 +167,14 @@ def create_app(
         try:
             state = await routine.apply_current()
         except TrackerError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
         return {"status": "ok", "state": state.model_dump()}
 
     @app.post("/api/beams/{beam_id}/target")
     async def steer_beam_target(
-        beam_id: int = PathParam(..., ge=0, le=7), req: TargetRequest = ...
+        beam_id: int = PathParam(..., ge=0, le=15), req: TargetRequest = ...
     ) -> dict[str, str]:
         """Steer a beam by direction cosines."""
         req.beam_id = beam_id
@@ -178,11 +182,13 @@ def create_app(
             reply = await client.set_target(req)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
 
     @app.post("/api/beams/{beam_id}/celestial")
     async def steer_beam_celestial(
-        beam_id: int = PathParam(..., ge=0, le=7), req: CelestialRequest = ...
+        beam_id: int = PathParam(..., ge=0, le=15), req: CelestialRequest = ...
     ) -> dict[str, str]:
         """Steer a beam by celestial RA/Dec coordinates."""
         req.beam_id = beam_id
@@ -190,7 +196,9 @@ def create_app(
             reply = await client.set_celestial_target(req)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
 
     @app.post("/api/beams/enable")
     async def enable_beams(req: EnableBeamsRequest) -> dict[str, str]:
@@ -199,7 +207,9 @@ def create_app(
             reply = await client.set_num_active_beams(req.num_active_beams)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
 
     @app.post("/api/antennas/mask")
     async def mask_antenna(req: MaskAntennaRequest) -> dict[str, str]:
@@ -208,7 +218,9 @@ def create_app(
             reply = await client.mask_antenna(req.antenna_id, req.enabled)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
 
     @app.post("/api/interpolation")
     async def set_interpolation(req: InterpolationRequest) -> dict[str, str]:
@@ -217,7 +229,9 @@ def create_app(
             reply = await client.set_interpolation(req.enabled)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
 
     @app.websocket("/ws")
     async def websocket_updates(ws: WebSocket) -> None:

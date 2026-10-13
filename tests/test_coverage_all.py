@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import asyncio
 from unittest.mock import AsyncMock, patch
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import viewer.__main__
 from viewer.client import TrackerClient, TrackerError
+from viewer.config import Settings
 from viewer.models import (
     BeamInfo,
-    Status,
-    TargetRequest,
     CelestialRequest,
     EnableBeamsRequest,
     MaskAntennaRequest,
+    Status,
+    TargetRequest,
 )
 from viewer.poller import StatusPoller
 from viewer.server import create_app
-from viewer.config import Settings
-import viewer.__main__
 
 
 @pytest.fixture
@@ -196,26 +197,33 @@ def test_server_creation_defaults():
 def test_server_ws_mock(mock_settings, mock_status):
     app = create_app(settings=mock_settings)
     app.state.poller._latest = mock_status
-    with patch(
-        "starlette.websockets.WebSocket.send_text", side_effect=Exception("mocked err")
+    with (
+        patch(
+            "starlette.websockets.WebSocket.send_text",
+            side_effect=Exception("mocked err"),
+        ),
+        TestClient(app) as client,
+        client.websocket_connect("/ws"),
     ):
-        with TestClient(app) as client:
-            with client.websocket_connect("/ws"):
-                pass
+        pass
 
     app.state.poller._latest = None
-    with patch(
-        "starlette.websockets.WebSocket.receive_text",
-        side_effect=Exception("mocked err"),
+    with (
+        patch(
+            "starlette.websockets.WebSocket.receive_text",
+            side_effect=Exception("mocked err"),
+        ),
+        TestClient(app) as client,
+        client.websocket_connect("/ws"),
     ):
-        with TestClient(app) as client:
-            with client.websocket_connect("/ws"):
-                pass
+        pass
 
-    with patch("asyncio.Queue.get", side_effect=RuntimeError("queue error")):
-        with TestClient(app) as client:
-            with client.websocket_connect("/ws"):
-                pass
+    with (
+        patch("asyncio.Queue.get", side_effect=RuntimeError("queue error")),
+        TestClient(app) as client,
+        client.websocket_connect("/ws"),
+    ):
+        pass
 
 
 def test_poller_cancel_loop():
@@ -236,10 +244,9 @@ def test_main_cli():
     import sys
 
     test_args = ["viewer", "--port", "12345"]
-    with patch.object(sys, "argv", test_args):
-        with patch("uvicorn.run") as mock_run:
-            viewer.__main__.main()
-            mock_run.assert_called_once()
+    with patch.object(sys, "argv", test_args), patch("uvicorn.run") as mock_run:
+        viewer.__main__.main()
+        mock_run.assert_called_once()
 
 
 @pytest.mark.asyncio
