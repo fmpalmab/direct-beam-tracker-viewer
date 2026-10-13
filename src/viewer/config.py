@@ -16,8 +16,9 @@ class Settings:
     spectrometer_interval: float = 1.0
     routine_enabled: bool = False
     routine_targets_path: str = "tools/verified_targets.json"
-    routine_num_beams: int = 4
+    routine_num_beams: int = 10
     routine_step_minutes: int = 60
+    routine_by_priority: bool = False
 
 
 def parse_args(args: list[str] | None = None) -> Settings:
@@ -73,8 +74,8 @@ def parse_args(args: list[str] | None = None) -> Settings:
         "--routine-beams",
         dest="routine_num_beams",
         type=int,
-        default=int(os.environ.get("ROUTINE_BEAMS", "4")),
-        help="Number of routine output beams (default: 4)",
+        default=int(os.environ.get("ROUTINE_BEAMS", "10")),
+        help="Number of routine output beams (default: 10)",
     )
     parser.add_argument(
         "--routine-step-minutes",
@@ -82,6 +83,13 @@ def parse_args(args: list[str] | None = None) -> Settings:
         type=int,
         default=int(os.environ.get("ROUTINE_STEP_MINUTES", "60")),
         help="Routine set-hour step in minutes (default: 60)",
+    )
+    parser.add_argument(
+        "--routine-priority",
+        dest="routine_by_priority",
+        action="store_true",
+        default=os.environ.get("ROUTINE_BY_PRIORITY", "") not in ("", "0", "false"),
+        help="Sort routine candidate targets by priority rank",
     )
 
     parsed = parser.parse_args(args)
@@ -97,6 +105,7 @@ def parse_args(args: list[str] | None = None) -> Settings:
         spectrometer_interval=spectrometer_interval,
         routine_enabled=bool(parsed.routine_enabled),
         routine_targets_path=parsed.routine_targets_path,
-        routine_num_beams=max(1, min(8, int(parsed.routine_num_beams))),
+        routine_num_beams=max(1, min(16, int(parsed.routine_num_beams))),
         routine_step_minutes=max(5, int(parsed.routine_step_minutes)),
+        routine_by_priority=bool(parsed.routine_by_priority),
     )

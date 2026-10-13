@@ -81,15 +81,35 @@ screen -dmS kotekan bash -c "echo 'FP_Charts123!' | sudo -S /home/fpalma/kotekan
 screen -dmS viewer bash -c "cd /home/fpalma/direct-beam-tracker-viewer && uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048 2>&1 | tee /home/fpalma/direct-beam-tracker-viewer/viewer.log"
 ```
 
-To run the precomputed observation routine (4 beams always on the 4
-highest-elevation verified targets, re-pointed at set hours), copy
-`tools/verified_targets.json` from the CHARTS workspace next to the viewer and
-add the routine flags:
+To run the precomputed observation routine (up to 10 beams locked on
+the highest-elevation verified targets, re-pointed at set hours):
 ```bash
-screen -dmS viewer bash -c "cd /home/fpalma/direct-beam-tracker-viewer && uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048 --routine --routine-targets verified_targets.json 2>&1 | tee /home/fpalma/direct-beam-tracker-viewer/viewer.log"
+# Fastest: Start the full 10-beam pipeline (Kotekan + Viewer Routine)
+cd /home/fpalma/direct-beam-tracker-viewer
+./scripts/start_routine_10beams.sh
+
+# Or manually in screens:
+screen -dmS kotekan bash -c "echo 'FP_Charts123!' | sudo -S /home/fpalma/kotekan/build/kotekan/kotekan -c /home/fpalma/kotekan/charts/config/64antennas_direct_tracker_10beams.yaml -b 127.0.0.1:12048 2>&1 | tee /home/fpalma/kotekan/kotekan_run.log"
+
+screen -dmS viewer bash -c "cd /home/fpalma/direct-beam-tracker-viewer && uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048 --routine --routine-targets verified_targets_10beams.json --routine-beams 10 --routine-step-minutes 60 2>&1 | tee /home/fpalma/direct-beam-tracker-viewer/viewer.log"
 ```
 The routine state is visible in the header badge, `GET /api/routine`, and the
 `routine` WebSocket stream; `POST /api/routine/apply` re-points immediately.
+
+### Priority Ranked 10-Beam Target Catalog (`verified_targets_10beams.json`)
+
+| Rank | Target | RA / Dec (J2000) | Transit Alt (Zenith) | Category | Primary Operational Objective |
+|:---:|:---|:---|:---:|:---|:---|
+| 1 | **NGC 1316 (Fornax A)** | 03h 22m 42s / -37° 12' 30" (50.6750°, -37.2083°) | 86.2° (3.8°) | Calibration / Radio Galaxy | Complex gain/phase calibration; transit amplitude baseline. |
+| 2 | **The Sun** | Ephemeris / Variable (198.3903°, -7.7872°) | >80° summer (64.4° mid-Oct) | Solar System | First-light beamforming test, element health, sanity check. |
+| 3 | **PSR B0826-34** | 08h 28m 10s / -34° 17' 24" (127.0417°, -34.2900°) | 89.1° (0.9°) | Pulsar Testbed | Broadside dedispersion verification (zero steering aberration). |
+| 4 | **Vela Pulsar (B0833-45)** | 08h 35m 20s / -45° 10' 54" (128.8333°, -45.1817°) | 78.2° (11.8°) | Pulsar Testbed | High-SNR single-pulse test for dynamic beam tracking. |
+| 5 | **NGC 253 (Sculptor)** | 00h 47m 33s / -25° 17' 18" (11.8875°, -25.2883°) | 81.9° (8.1°) | Primary FRB Target | Core-collapse magnetar hunting (proven magnetar flare host). |
+| 6 | **Fornax Cluster Core** | 03h 38m 29s / -35° 27' 03" (54.6208°, -35.4508°) | 88.0° (2.0°) | Primary FRB Target | Beam-multiplexed globular cluster search (6,000+ GCs). |
+| 7 | **Centaurus A (NGC 5128)** | 13h 25m 28s / -43° 01' 09" (201.3667°, -43.0192°) | 80.4° (9.6°) | Dual (Calib + FRB) | Secondary flux scale + proximate (3.8 Mpc) merger monitor. |
+| 8 | **The Antennae (NGC 4038/39)** | 12h 01m 53s / -18° 52' 10" (180.4708°, -18.8694°) | 75.5° (14.6°) | Secondary FRB Target | Active merger with young massive star clusters. |
+| 9 | **Pictor A / Hydra A** | Pictor: 05h 19m / -45° 46' (79.7500°, -45.7667°)<br>Hydra: 09h 18m / -12° 05' (139.5000°, -12.0833°) | 77.7° (12.3°)<br>68.7° (21.3°) | Compact Calibrator | Compact source beam shape and sidelobe pattern mapping. |
+| 10 | **NGC 612 (PKS 0131-36)** | 01h 33m 58s / -36° 29' 36" (23.4917°, -36.4933°) | 86.9° (3.1°) | Secondary Baseline | Near-zenith FRB deep search with low foreground confusion. |
 
 #### Managing Screens
 * View active sessions: `screen -ls`

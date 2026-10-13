@@ -87,8 +87,8 @@ class TargetRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_target(self) -> TargetRequest:
-        if not (0 <= self.beam_id < 8):
-            raise ValueError(f"beam_id must be between 0 and 7, got {self.beam_id}")
+        if not (0 <= self.beam_id < 16):
+            raise ValueError(f"beam_id must be between 0 and 15, got {self.beam_id}")
 
         if self.l0 is not None and self.m0 is not None:
             r2 = self.l0**2 + self.m0**2
@@ -112,8 +112,8 @@ class CelestialRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_celestial(self) -> CelestialRequest:
-        if not (0 <= self.beam_id < 8):
-            raise ValueError(f"beam_id must be between 0 and 7, got {self.beam_id}")
+        if not (0 <= self.beam_id < 16):
+            raise ValueError(f"beam_id must be between 0 and 15, got {self.beam_id}")
 
         if not (0.0 <= self.ra_deg < 360.0):
             raise ValueError(f"ra_deg must be in [0, 360), got {self.ra_deg}")
@@ -131,9 +131,9 @@ class EnableBeamsRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_num_beams(self) -> EnableBeamsRequest:
-        if not (1 <= self.num_active_beams <= 8):
+        if not (1 <= self.num_active_beams <= 16):
             raise ValueError(
-                f"num_active_beams must be between 1 and 8, got {self.num_active_beams}"
+                f"num_active_beams must be between 1 and 16, got {self.num_active_beams}"
             )
         return self
 

@@ -70,8 +70,8 @@ class MockKotekanBackend:
         if method == "POST" and path == "/direct_tracker/set_target":
             body = json.loads(request.content)
             beam_id = body.get("beam_id", 0)
-            if beam_id >= 8:
-                return httpx.Response(400, text="beam_id >= MAX_DIRECT_BEAMS (8)")
+            if beam_id >= 16:
+                return httpx.Response(400, text="beam_id >= MAX_DIRECT_BEAMS (16)")
             # Update beam
             while len(self.beams) <= beam_id:
                 self.beams.append(
@@ -100,8 +100,8 @@ class MockKotekanBackend:
         if method == "POST" and path == "/direct_tracker/set_celestial_target":
             body = json.loads(request.content)
             beam_id = body.get("beam_id", 0)
-            if beam_id >= 8:
-                return httpx.Response(400, text="beam_id >= MAX_DIRECT_BEAMS (8)")
+            if beam_id >= 16:
+                return httpx.Response(400, text="beam_id >= MAX_DIRECT_BEAMS (16)")
             while len(self.beams) <= beam_id:
                 self.beams.append(
                     {
@@ -123,7 +123,7 @@ class MockKotekanBackend:
         if method == "POST" and path == "/direct_tracker/enable_beam":
             body = json.loads(request.content)
             n = body.get("num_active_beams", 1)
-            self.num_active_beams = min(8, max(1, n))
+            self.num_active_beams = min(16, max(1, n))
             return httpx.Response(
                 200, text=f"Active beams set to {self.num_active_beams}"
             )

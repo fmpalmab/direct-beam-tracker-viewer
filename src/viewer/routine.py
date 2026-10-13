@@ -57,6 +57,9 @@ class RoutineTarget(BaseModel):
     dec_deg: float
     transit_local: str
     max_alt_deg: float | None = None
+    priority: int = 999
+    category: str = ""
+    objective: str = ""
 
 
 class BeamAssignment(BaseModel):
@@ -92,7 +95,7 @@ class RoutineState(BaseModel):
     """Live routine state exposed over the API / WebSocket."""
 
     enabled: bool = False
-    num_beams: int = 4
+    num_beams: int = 10
     date_local: str | None = None
     step_minutes: int = 60
     current_slot: RoutineSlot | None = None
@@ -117,6 +120,18 @@ class TargetCatalog:
 def load_targets(path: str | Path) -> TargetCatalog:
     """Load and parse a verified_targets.json catalog."""
     raw = Path(path)
+    if not raw.exists():
+        for candidate in [
+            Path(__file__).resolve().parents[1] / raw,
+            Path(__file__).resolve().parents[2] / raw,
+            Path(__file__).resolve().parents[2] / "tools" / raw.name,
+            Path.cwd() / raw,
+            Path.cwd() / "tools" / raw.name,
+        ]:
+            if candidate.exists():
+                raw = candidate
+                break
+
     data = json.loads(raw.read_text(encoding="utf-8"))
     site = data["site"]
     return TargetCatalog(
@@ -134,6 +149,9 @@ def load_targets(path: str | Path) -> TargetCatalog:
                 max_alt_deg=float(t["max_alt_deg"])
                 if t.get("max_alt_deg") is not None
                 else None,
+                priority=int(t.get("priority", 999)),
+                category=str(t.get("category", "")),
+                objective=str(t.get("objective", "")),
             )
             for t in data["targets"]
         ],
@@ -167,15 +185,16 @@ def altitude_deg(target: RoutineTarget, lat_deg: float, hours_local: float) -> f
 
 def generate_schedule(
     catalog: TargetCatalog,
-    num_beams: int = 4,
+    num_beams: int = 10,
     step_minutes: int = 60,
+    by_priority: bool = False,
 ) -> RoutineSchedule:
     """Build the static set-hour table.
 
     For each slot the ``num_beams`` targets with the highest altitude above
-    the elevation mask win a beam. Assignments are stable: a target that
-    stays in the winning set keeps its beam; newcomers take freed beams in
-    ascending beam_id order.
+    the elevation mask (or highest priority rank if by_priority=True) win a beam.
+    Assignments are stable: a target that stays in the winning set keeps its beam;
+    newcomers take freed beams in ascending beam_id order.
     """
     slots: list[RoutineSlot] = []
     prev_assignment: dict[str, int] = {}  # label -> beam_id
@@ -186,7 +205,10 @@ def generate_schedule(
             (altitude_deg(t, catalog.site_lat_deg, t_hours), t) for t in catalog.targets
         ]
         visible = [(alt, t) for alt, t in visible if alt >= catalog.elevation_mask_deg]
-        visible.sort(key=lambda pair: (-pair[0], pair[1].label))
+        if by_priority:
+            visible.sort(key=lambda pair: (pair[1].priority, -pair[0], pair[1].label))
+        else:
+            visible.sort(key=lambda pair: (-pair[0], pair[1].label))
         chosen = visible[:num_beams]
 
         by_beam: dict[int, tuple[float, RoutineTarget]] = {}

@@ -81,7 +81,7 @@ def test_models_validation_errors():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        TargetRequest(beam_id=9)
+        TargetRequest(beam_id=16)
 
     with pytest.raises(ValidationError):
         TargetRequest(l0=0.9, m0=0.9)
@@ -90,7 +90,7 @@ def test_models_validation_errors():
         TargetRequest(l1=0.9, m1=0.9)
 
     with pytest.raises(ValidationError):
-        CelestialRequest(beam_id=9, ra_deg=0, dec_deg=0)
+        CelestialRequest(beam_id=16, ra_deg=0, dec_deg=0)
 
     with pytest.raises(ValidationError):
         CelestialRequest(ra_deg=-10, dec_deg=0)
@@ -99,7 +99,7 @@ def test_models_validation_errors():
         CelestialRequest(ra_deg=0, dec_deg=-100)
 
     with pytest.raises(ValidationError):
-        EnableBeamsRequest(num_active_beams=9)
+        EnableBeamsRequest(num_active_beams=17)
 
     with pytest.raises(ValidationError):
         MaskAntennaRequest(antenna_id=-1, enabled=True)

@@ -2,7 +2,9 @@
 (function() {
   const BEAM_COLORS = [
     '#00e5ff', '#ff9100', '#00e676', '#d500f9',
-    '#ff1744', '#ffea00', '#2979ff', '#ff4081'
+    '#ff1744', '#ffea00', '#2979ff', '#ff4081',
+    '#14b8a6', '#f97316', '#a855f7', '#06b6d4',
+    '#eab308', '#ec4899', '#84cc16', '#6366f1'
   ];
 
   let currentStatus = null;
@@ -548,8 +550,8 @@
   // Num active beams
   applyBeamsBtn.addEventListener('click', async () => {
     const val = parseInt(numBeamsSelect.value, 10);
-    if (isNaN(val) || val < 1 || val > 8) {
-      showToast('Active beams must be between 1 and 8', true);
+    if (isNaN(val) || val < 1 || val > 16) {
+      showToast('Active beams must be between 1 and 16', true);
       return;
     }
     try {

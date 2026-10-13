@@ -260,3 +260,65 @@ def test_spectrometer_labels_use_routine_names() -> None:
     # Unnamed beams fall back to coordinate identification (none here)
     assert data.beams[1].target_name is None
     assert data.beams[1].label == "Beam 1"
+
+
+TEN_BEAM_CATALOG = Path(__file__).resolve().parents[1] / "verified_targets_10beams.json"
+
+
+def test_10beam_catalog_loading_and_schedule() -> None:
+    assert TEN_BEAM_CATALOG.exists(), f"10-beam catalog not found at {TEN_BEAM_CATALOG}"
+    catalog = load_targets(TEN_BEAM_CATALOG)
+    labels = {t.label for t in catalog.targets}
+
+    # Verify all targets requested are present
+    expected_labels = {
+        "NGC 1316 (Fornax A)",
+        "The Sun",
+        "PSR B0826-34",
+        "Vela Pulsar (B0833-45)",
+        "NGC 253 (Sculptor)",
+        "Fornax Cluster Core",
+        "Centaurus A (NGC 5128)",
+        "The Antennae (NGC 4038/39)",
+        "Pictor A",
+        "Hydra A",
+        "NGC 612 (PKS 0131-36)",
+    }
+    assert expected_labels.issubset(labels)
+
+    sched = generate_schedule(catalog, num_beams=10, step_minutes=60)
+    assert len(sched.slots) == 24
+    assert sched.num_beams == 10
+
+    for slot in sched.slots:
+        assert len(slot.assignments) <= 10
+        assigned_ids = [a.beam_id for a in slot.assignments]
+        # beam IDs should be unique and within 0..9
+        assert len(assigned_ids) == len(set(assigned_ids))
+        assert all(0 <= bid < 10 for bid in assigned_ids)
+
+
+def test_10beam_by_priority_schedule() -> None:
+    catalog = load_targets(TEN_BEAM_CATALOG)
+    sched = generate_schedule(catalog, num_beams=10, step_minutes=60, by_priority=True)
+    assert len(sched.slots) == 24
+
+    for slot in sched.slots:
+        # If any assignments exist, check priorities are valid
+        for a in slot.assignments:
+            assert a.beam_id < 10
+
+
+async def test_10beam_runner_apply(mock_client, mock_backend) -> None:
+    catalog = load_targets(TEN_BEAM_CATALOG)
+    sched = generate_schedule(catalog, num_beams=10, step_minutes=60)
+    runner = RoutineRunner(client=mock_client, schedule=sched)
+
+    state = await runner.apply_current()
+    assert state.enabled
+    assert state.num_beams == 10
+    assert state.last_error is None
+    assert state.last_applied_local is not None
+    assert mock_backend.num_active_beams == len(state.current_slot.assignments)
+    assert len(runner.beam_names()) == len(state.current_slot.assignments)
+

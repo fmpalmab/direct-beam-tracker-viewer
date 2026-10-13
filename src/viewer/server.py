@@ -57,6 +57,7 @@ def create_app(
             catalog,
             num_beams=settings.routine_num_beams,
             step_minutes=settings.routine_step_minutes,
+            by_priority=settings.routine_by_priority,
         )
         routine = RoutineRunner(client=client, schedule=schedule)
 

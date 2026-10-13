@@ -101,6 +101,51 @@ def identify_celestial_target(beam: BeamInfo | None) -> str:
         dec, 22.0145, abs_tol=1.0
     ):
         return "Crab Pulsar"
+    # NGC 1316 (Fornax A): RA ~ 50.68°, Dec ~ -37.21°
+    if math.isclose(ra, 50.6750, abs_tol=1.0) and math.isclose(
+        dec, -37.2083, abs_tol=1.0
+    ):
+        return "NGC 1316 (Fornax A)"
+    # PSR B0826-34: RA ~ 127.04°, Dec ~ -34.29°
+    if math.isclose(ra, 127.0417, abs_tol=1.0) and math.isclose(
+        dec, -34.2900, abs_tol=1.0
+    ):
+        return "PSR B0826-34"
+    # NGC 253 (Sculptor): RA ~ 11.89°, Dec ~ -25.29°
+    if math.isclose(ra, 11.8875, abs_tol=1.0) and math.isclose(
+        dec, -25.2883, abs_tol=1.0
+    ):
+        return "NGC 253 (Sculptor)"
+    # Fornax Cluster Core: RA ~ 54.62°, Dec ~ -35.45°
+    if math.isclose(ra, 54.6208, abs_tol=1.0) and math.isclose(
+        dec, -35.4508, abs_tol=1.0
+    ):
+        return "Fornax Cluster Core"
+    # Centaurus A (NGC 5128): RA ~ 201.37°, Dec ~ -43.02°
+    if math.isclose(ra, 201.3667, abs_tol=1.0) and math.isclose(
+        dec, -43.0192, abs_tol=1.0
+    ):
+        return "Centaurus A"
+    # The Antennae (NGC 4038/39): RA ~ 180.47°, Dec ~ -18.87°
+    if math.isclose(ra, 180.4708, abs_tol=1.0) and math.isclose(
+        dec, -18.8694, abs_tol=1.0
+    ):
+        return "The Antennae"
+    # Pictor A: RA ~ 79.75°, Dec ~ -45.77°
+    if math.isclose(ra, 79.7500, abs_tol=1.0) and math.isclose(
+        dec, -45.7667, abs_tol=1.0
+    ):
+        return "Pictor A"
+    # Hydra A: RA ~ 139.50°, Dec ~ -12.08°
+    if math.isclose(ra, 139.5000, abs_tol=1.0) and math.isclose(
+        dec, -12.0833, abs_tol=1.0
+    ):
+        return "Hydra A"
+    # NGC 612 (PKS 0131-36): RA ~ 23.49°, Dec ~ -36.49°
+    if math.isclose(ra, 23.4917, abs_tol=1.0) and math.isclose(
+        dec, -36.4933, abs_tol=1.0
+    ):
+        return "NGC 612"
 
     return f"RA {ra:.2f}°, Dec {dec:.2f}°"
 
@@ -171,7 +216,7 @@ class SpectrometerProcessor:
         num_active = (
             status.num_active_beams if status and status.num_active_beams > 0 else 2
         )
-        active_beams = max(1, min(num_active, 8))
+        active_beams = max(1, min(num_active, 16))
         effective_max_beams = max(max_beams, active_beams)
 
         # 1. Attempt to unpack real buffers

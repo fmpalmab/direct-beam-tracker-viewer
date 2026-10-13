@@ -101,15 +101,15 @@ def test_celestial_validation_and_steer(app_and_poller) -> None:
 def test_enable_beams_and_controls(app_and_poller) -> None:
     app, _ = app_and_poller
     with TestClient(app) as client:
-        # Invalid beam count (must be 1..8) -> 422
+        # Invalid beam count (must be 1..16) -> 422
         res = client.post("/api/beams/enable", json={"num_active_beams": 0})
         assert res.status_code == 422
 
-        res = client.post("/api/beams/enable", json={"num_active_beams": 10})
+        res = client.post("/api/beams/enable", json={"num_active_beams": 20})
         assert res.status_code == 422
 
-        # Valid beam count -> 200
-        res = client.post("/api/beams/enable", json={"num_active_beams": 4})
+        # Valid beam count -> 200 (including 10 beams)
+        res = client.post("/api/beams/enable", json={"num_active_beams": 10})
         assert res.status_code == 200
 
         # Antenna mask
