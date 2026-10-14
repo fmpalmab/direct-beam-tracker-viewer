@@ -121,13 +121,21 @@ def load_targets(path: str | Path) -> TargetCatalog:
     """Load and parse a verified_targets.json catalog."""
     raw = Path(path)
     if not raw.exists():
-        for candidate in [
+        candidates = [
             Path(__file__).resolve().parents[1] / raw,
             Path(__file__).resolve().parents[2] / raw,
             Path(__file__).resolve().parents[2] / "tools" / raw.name,
+            Path(__file__).resolve().parents[2]
+            / "tools"
+            / "verified_targets_10beams.json",
+            Path(__file__).resolve().parents[2] / "tools" / "verified_targets.json",
             Path.cwd() / raw,
             Path.cwd() / "tools" / raw.name,
-        ]:
+            Path.cwd() / "tools" / "verified_targets_10beams.json",
+            Path.cwd() / "tools" / "verified_targets.json",
+            Path.cwd() / "verified_targets_10beams.json",
+        ]
+        for candidate in candidates:
             if candidate.exists():
                 raw = candidate
                 break
@@ -166,13 +174,25 @@ def _transit_hours(transit_local: str) -> float:
     return int(m.group(1)) + int(m.group(2)) / 60.0
 
 
-def altitude_deg(target: RoutineTarget, lat_deg: float, hours_local: float) -> float:
-    """Target altitude at a local solar time, from the catalog transit time.
+SIDEREAL_RATE = 1.00273790935
+HOURS_SHIFT_PER_DAY = 0.065529  # 23h 56m 04.1s -> 3m 55.9s earlier per day
+
+
+def altitude_deg(
+    target: RoutineTarget,
+    lat_deg: float,
+    hours_local: float,
+    days_since_catalog: float = 0.0,
+) -> float:
+    """Target altitude at a local solar time, accounting for sidereal day shift.
 
     Hour angle is periodic mod 24h, so day offsets in the transit string
     ('(-1d)', '(+1d)') do not affect the result.
     """
-    hour_angle = ((hours_local - _transit_hours(target.transit_local)) * 15.0) % 360.0
+    effective_transit = (
+        _transit_hours(target.transit_local) - days_since_catalog * HOURS_SHIFT_PER_DAY
+    ) % 24.0
+    hour_angle = ((hours_local - effective_transit) * SIDEREAL_RATE * 15.0) % 360.0
     if hour_angle > 180.0:
         hour_angle -= 360.0
     lat = math.radians(lat_deg)
@@ -188,6 +208,7 @@ def generate_schedule(
     num_beams: int = 10,
     step_minutes: int = 60,
     by_priority: bool = False,
+    target_date: str | None = None,
 ) -> RoutineSchedule:
     """Build the static set-hour table.
 
@@ -196,13 +217,28 @@ def generate_schedule(
     Assignments are stable: a target that stays in the winning set keeps its beam;
     newcomers take freed beams in ascending beam_id order.
     """
+    days_since_catalog = 0.0
+    schedule_date = catalog.date_local
+    if target_date:
+        try:
+            d_target = datetime.strptime(target_date, "%Y-%m-%d").date()
+            d_catalog = datetime.strptime(catalog.date_local, "%Y-%m-%d").date()
+            days_since_catalog = float((d_target - d_catalog).days)
+            schedule_date = target_date
+        except Exception:
+            pass
+
     slots: list[RoutineSlot] = []
     prev_assignment: dict[str, int] = {}  # label -> beam_id
 
     for minutes in range(0, 24 * 60, step_minutes):
         t_hours = minutes / 60.0
         visible = [
-            (altitude_deg(t, catalog.site_lat_deg, t_hours), t) for t in catalog.targets
+            (
+                altitude_deg(t, catalog.site_lat_deg, t_hours, days_since_catalog),
+                t,
+            )
+            for t in catalog.targets
         ]
         visible = [(alt, t) for alt, t in visible if alt >= catalog.elevation_mask_deg]
         if by_priority:
@@ -241,7 +277,7 @@ def generate_schedule(
         prev_assignment = {a.label: a.beam_id for a in assignments}
 
     return RoutineSchedule(
-        date_local=catalog.date_local,
+        date_local=schedule_date,
         site_lat_deg=catalog.site_lat_deg,
         site_lon_deg=catalog.site_lon_deg,
         elevation_mask_deg=catalog.elevation_mask_deg,
@@ -381,6 +417,7 @@ class RoutineRunner:
             reply = await self.client.set_celestial_target(
                 CelestialRequest(beam_id=a.beam_id, ra_deg=a.ra_deg, dec_deg=a.dec_deg)
             )
+            self.names[a.beam_id] = a.label
             logger.info(
                 "Routine %s: beam %d -> %s (RA %.4f, Dec %.4f, alt %.1f deg) %s",
                 slot.time_local,
@@ -391,7 +428,6 @@ class RoutineRunner:
                 a.altitude_deg,
                 reply.strip(),
             )
-        self.names = {a.beam_id: a.label for a in slot.assignments}
         self.last_applied_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.last_error = None
         self._failed = False

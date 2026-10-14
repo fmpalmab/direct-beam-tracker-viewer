@@ -205,3 +205,113 @@ def test_health_includes_spectrometer_interval(app_and_poller) -> None:
         data = res.json()
         assert "spectrometer_interval_s" in data
         assert data["spectrometer_interval_s"] >= 0.2
+
+
+def test_all_history_endpoint(app_and_poller) -> None:
+    app, poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/history/all?limit=50")
+        assert res.status_code == 200
+        data = res.json()
+        assert isinstance(data, dict)
+        # Should have data for tracked beams
+        assert "0" in data or 0 in data
+
+
+def test_api_token_auth(mock_client: TrackerClient) -> None:
+    token_settings = Settings(api_token="supersecret")
+    poller = StatusPoller(client=mock_client, interval=0.2, history=50)
+    app = create_app(settings=token_settings, client=mock_client, poller=poller)
+
+    with TestClient(app) as client:
+        # 1. Unauthenticated mutating request -> 401
+        res = client.post("/api/beams/0/target", json={"l0": 0.1, "m0": 0.2})
+        assert res.status_code == 401
+        assert "Unauthorized" in res.json()["detail"]
+
+        # 2. Invalid token -> 401
+        res = client.post(
+            "/api/beams/0/target",
+            json={"l0": 0.1, "m0": 0.2},
+            headers={"X-API-Token": "wrong"},
+        )
+        assert res.status_code == 401
+
+        # 3. Valid X-API-Token header -> 200
+        res = client.post(
+            "/api/beams/0/target",
+            json={"l0": 0.1, "m0": 0.2},
+            headers={"X-API-Token": "supersecret"},
+        )
+        assert res.status_code == 200
+
+        # 4. Valid Authorization Bearer header -> 200
+        res = client.post(
+            "/api/interpolation",
+            json={"enabled": True},
+            headers={"Authorization": "Bearer supersecret"},
+        )
+        assert res.status_code == 200
+
+
+def test_steer_clears_routine_name(
+    mock_client: TrackerClient, test_settings: Settings
+) -> None:
+    from viewer.routine import (
+        BeamAssignment,
+        RoutineRunner,
+        RoutineSchedule,
+        RoutineSlot,
+    )
+
+    schedule = RoutineSchedule(
+        date_local="2026-10-14",
+        site_lat_deg=-33.0,
+        site_lon_deg=-70.0,
+        elevation_mask_deg=10.0,
+        num_beams=2,
+        step_minutes=60,
+        slots=[
+            RoutineSlot(
+                time_local="12:00",
+                assignments=[
+                    BeamAssignment(
+                        beam_id=0,
+                        label="Target A",
+                        ra_deg=10.0,
+                        dec_deg=-30.0,
+                        altitude_deg=70.0,
+                    ),
+                    BeamAssignment(
+                        beam_id=1,
+                        label="Target B",
+                        ra_deg=20.0,
+                        dec_deg=-30.0,
+                        altitude_deg=65.0,
+                    ),
+                ],
+            )
+        ],
+    )
+    routine = RoutineRunner(client=mock_client, schedule=schedule)
+    routine.names[0] = "Target A"
+    routine.names[1] = "Target B"
+
+    poller = StatusPoller(client=mock_client, interval=0.2, history=50)
+    app = create_app(
+        settings=test_settings, client=mock_client, poller=poller, routine=routine
+    )
+
+    with TestClient(app) as client:
+        # Steer beam 0 -> routine.names[0] should be cleared
+        res = client.post("/api/beams/0/target", json={"l0": 0.2, "m0": 0.2})
+        assert res.status_code == 200
+        assert 0 not in routine.names
+        assert routine.names[1] == "Target B"
+
+        # Steer beam 1 by celestial -> routine.names[1] should be cleared
+        res = client.post(
+            "/api/beams/1/celestial", json={"ra_deg": 100.0, "dec_deg": -20.0}
+        )
+        assert res.status_code == 200
+        assert 1 not in routine.names

@@ -123,3 +123,23 @@ async def test_connect_retry() -> None:
     reply = await client.set_num_active_beams(2)
     assert calls == 2
     assert "Success on retry" in reply
+
+
+@pytest.mark.asyncio
+async def test_timeout_and_protocol_retry() -> None:
+    calls = 0
+
+    def retry_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("Timeout waiting for kotekan")
+        return httpx.Response(200, text="Success on retry after timeout")
+
+    transport = httpx.MockTransport(retry_handler)
+    http_client = httpx.AsyncClient(transport=transport, base_url="http://mock")
+    client = TrackerClient(base_url="http://mock", client=http_client)
+
+    reply = await client.set_num_active_beams(4)
+    assert calls == 2
+    assert "Success on retry" in reply

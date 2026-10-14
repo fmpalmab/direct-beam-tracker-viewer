@@ -4,10 +4,12 @@
 # ==============================================================================
 set -euo pipefail
 
-SUDO_PASS="FP_Charts123!"
-
 echo "Stopping Kotekan process..."
-echo "${SUDO_PASS}" | sudo -S pkill -f "/kotekan/build/kotekan/kotekan" 2>/dev/null || true
+if [[ -n "${SUDO_PASS:-}" ]]; then
+    echo "${SUDO_PASS}" | sudo -S pkill -f "/kotekan/build/kotekan/kotekan" 2>/dev/null || true
+else
+    sudo pkill -f "/kotekan/build/kotekan/kotekan" 2>/dev/null || true
+fi
 if command -v screen >/dev/null 2>&1; then
     screen -S kotekan -X quit 2>/dev/null || true
 fi

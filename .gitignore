@@ -8,3 +8,7 @@ dist/
 build/
 .DS_Store
 viewer.log
+.coverage
+.coverage.*
+htmlcov/
+argon_review.txt

@@ -72,6 +72,16 @@ class StatusPoller:
         """Return history slice for the given beam_id."""
         return list(self._history.get(beam_id, []))
 
+    def all_history(self, max_points: int = 120) -> dict[int, list[BeamSample]]:
+        """Return recent history slice for all tracked beams in a single call."""
+        result: dict[int, list[BeamSample]] = {}
+        for beam_id, dq in self._history.items():
+            if max_points and len(dq) > max_points:
+                result[beam_id] = list(dq)[-max_points:]
+            else:
+                result[beam_id] = list(dq)
+        return result
+
     def subscribe(self) -> asyncio.Queue[Status]:
         """Subscribe a new WebSocket client for Status updates."""
         q: asyncio.Queue[Status] = asyncio.Queue(maxsize=20)
@@ -157,23 +167,27 @@ class StatusPoller:
         while self._running:
             t0 = time.monotonic()
             try:
-                # 1. Fetch inspection frames from both streams
-                buf_0 = await self.client.get_inspect_frame(
-                    "host_formed_beams_buffer_0"
-                )
-                buf_1 = await self.client.get_inspect_frame(
-                    "host_formed_beams_buffer_1"
+                # 1. Fetch inspection frames from both streams concurrently
+                buf_0, buf_1 = await asyncio.gather(
+                    self.client.get_inspect_frame("host_formed_beams_buffer_0"),
+                    self.client.get_inspect_frame("host_formed_beams_buffer_1"),
                 )
 
                 # 2. Process into calibrated power spectra
+                configured_beams = (
+                    len(self._latest.beams)
+                    if (self._latest and self._latest.beams)
+                    else 2
+                )
                 spec_data = self.spectrometer_processor.process(
                     buf_0=buf_0,
                     buf_1=buf_1,
                     status=self._latest,
-                    max_beams=self._latest.num_active_beams if self._latest else 2,
+                    max_beams=configured_beams,
                     beam_names=self.beam_name_provider()
                     if self.beam_name_provider
                     else None,
+                    cadence_s=self.spectrometer_interval,
                 )
                 self._latest_spectrometer = spec_data
 

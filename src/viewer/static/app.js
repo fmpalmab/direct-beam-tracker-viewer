@@ -46,6 +46,20 @@
   const specLegend = document.getElementById('spec-legend');
   const specStats = document.getElementById('spec-stats');
 
+  // All Beams Grid View Elements
+  const mapPanel = document.getElementById('map-panel');
+  const specPanel = document.getElementById('spectrometer-panel');
+  const allBeamsPanel = document.getElementById('all-beams-panel');
+  const allBeamsGridEl = document.getElementById('all-beams-grid');
+  const btnViewSingle = document.getElementById('btn-view-single');
+  const btnViewGrid = document.getElementById('btn-view-grid');
+  const btnViewSingleGrid = document.getElementById('btn-view-single-grid');
+  const btnViewGridActive = document.getElementById('btn-view-grid-active');
+
+  let currentViewMode = 'overview';
+  let historyAllFetched = false;
+  let allBeamsGrid = null;
+
   // Spectrometer State
   let latestSpectrometer = null;
   let specViewMode = 'all';
@@ -197,6 +211,11 @@
 
     // Redraw canvas
     requestAnimationFrame(drawSkyMap);
+
+    // Update all beams grid
+    if (allBeamsGrid) {
+      allBeamsGrid.updateStatus(status);
+    }
   }
 
   function updateBeamSelects(beams) {
@@ -328,6 +347,7 @@
   // --- Canvas Sky Map ---
 
   function drawSkyMap() {
+    if (document.hidden || currentViewMode !== 'overview') return;
     const w = canvas.width;
     const h = canvas.height;
     const cx = w / 2;
@@ -605,6 +625,11 @@
 
     // Redraw canvas
     requestAnimationFrame(drawSpectrometer);
+
+    // Update all beams grid
+    if (allBeamsGrid) {
+      allBeamsGrid.updateSpectrometer(specData);
+    }
   }
 
   function updateSpectrometerViewSelect(beams) {
@@ -674,6 +699,7 @@
 
   function drawSpectrometer() {
     if (!specCanvas || !specCtx) return;
+    if (document.hidden || currentViewMode !== 'overview') return;
 
     const width = specCanvas.width;
     const height = specCanvas.height;
@@ -989,6 +1015,243 @@
     specViewSelect.addEventListener('change', (e) => {
       specViewMode = e.target.value;
       drawSpectrometer();
+    });
+  }
+
+  // --- All Beams Multi-Square Grid Renderer ---
+
+  class AllBeamsGridRenderer {
+    constructor(containerEl, onSelectBeam) {
+      this.container = containerEl;
+      this.onSelectBeam = onSelectBeam;
+      this.tiles = new Map();
+      this.latestStatus = null;
+      this.latestSpec = null;
+      this.trails = new Map();
+      this.rafId = null;
+    }
+
+    ensureTile(beamId) {
+      if (this.tiles.has(beamId)) return this.tiles.get(beamId);
+
+      const card = document.createElement('div');
+      card.className = 'beam-square-card';
+      card.innerHTML = `
+        <div class="beam-square-header">
+          <span class="beam-square-title">Beam ${beamId}</span>
+          <span class="beam-square-meta">--</span>
+        </div>
+        <div class="beam-square-canvases">
+          <canvas class="beam-sky-canvas" width="140" height="140"></canvas>
+          <canvas class="beam-spec-canvas" width="220" height="140"></canvas>
+        </div>
+      `;
+      card.addEventListener('click', () => this.onSelectBeam(beamId));
+      this.container.appendChild(card);
+
+      const skyCanvas = card.querySelector('.beam-sky-canvas');
+      const specCanvas = card.querySelector('.beam-spec-canvas');
+      const tile = {
+        root: card,
+        skyCtx: skyCanvas.getContext('2d', { alpha: false }),
+        specCtx: specCanvas.getContext('2d', { alpha: false }),
+        titleEl: card.querySelector('.beam-square-title'),
+        metaEl: card.querySelector('.beam-square-meta'),
+        lastTitle: '',
+        lastMeta: '',
+      };
+      this.tiles.set(beamId, tile);
+      return tile;
+    }
+
+    setHistoryAll(historyMap) {
+      if (!historyMap) return;
+      for (const [beamIdStr, samples] of Object.entries(historyMap)) {
+        const bId = parseInt(beamIdStr, 10);
+        this.trails.set(bId, samples.map(s => ({ l0: s.l0, m0: s.m0 })));
+      }
+      this.scheduleRender();
+    }
+
+    updateStatus(status) {
+      this.latestStatus = status;
+      if (status && status.beams) {
+        for (const b of status.beams) {
+          if (!this.trails.has(b.beam_id)) {
+            this.trails.set(b.beam_id, []);
+          }
+          const trail = this.trails.get(b.beam_id);
+          trail.push({ l0: b.l0, m0: b.m0 });
+          if (trail.length > 120) trail.shift();
+        }
+      }
+      this.scheduleRender();
+    }
+
+    updateSpectrometer(specData) {
+      this.latestSpec = specData;
+      this.scheduleRender();
+    }
+
+    scheduleRender() {
+      if (document.hidden || currentViewMode !== 'grid' || this.rafId !== null) return;
+      this.rafId = requestAnimationFrame(() => {
+        this.rafId = null;
+        this.renderAll();
+      });
+    }
+
+    renderAll() {
+      if (!this.latestStatus || !this.latestStatus.beams) return;
+      const activeCount = this.latestStatus.num_active_beams || 0;
+      const specBeams = this.latestSpec?.beams || {};
+
+      for (const beam of this.latestStatus.beams) {
+        const id = beam.beam_id;
+        const isActive = id < activeCount;
+        const tile = this.ensureTile(id);
+        tile.root.classList.toggle('inactive', !isActive);
+        tile.root.classList.toggle('selected', id === selectedBeamId);
+
+        const spec = specBeams[id];
+        const rName = beamName(id);
+        const targetName = rName || spec?.target_name || (beam.celestial_target?.is_set ? `RA ${beam.celestial_target.ra_deg?.toFixed(1)}°` : '');
+        const titleText = targetName ? `B${id}: ${targetName}` : `Beam ${id}`;
+        if (tile.lastTitle !== titleText) {
+          tile.titleEl.textContent = titleText;
+          tile.lastTitle = titleText;
+        }
+
+        const peakDb = spec?.stats?.peak_power_db;
+        const metaText = `l=${beam.l0.toFixed(3)} m=${beam.m0.toFixed(3)}` +
+          (peakDb !== undefined ? ` | ${peakDb.toFixed(1)} dB` : '');
+        if (tile.lastMeta !== metaText) {
+          tile.metaEl.textContent = metaText;
+          tile.lastMeta = metaText;
+        }
+
+        this.drawSkySquare(tile.skyCtx, beam, this.trails.get(id) || []);
+        if (spec && spec.power_db) {
+          this.drawMiniSpectrum(tile.specCtx, spec.power_db);
+        }
+      }
+    }
+
+    drawSkySquare(ctx, beam, trail) {
+      const w = 140, h = 140, cx = 70, cy = 70, r = 60;
+      ctx.fillStyle = '#0d1117';
+      ctx.fillRect(0, 0, w, h);
+
+      // Horizon circle (l^2 + m^2 = 1) & crosshairs
+      ctx.strokeStyle = '#262c3a';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
+      ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
+      ctx.stroke();
+
+      // Trail path
+      if (trail.length > 1) {
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+        ctx.beginPath();
+        for (let i = 0; i < trail.length; i++) {
+          const px = cx + trail[i].l0 * r;
+          const py = cy - trail[i].m0 * r;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+
+      // Current beam position dot
+      const bx = cx + beam.l0 * r;
+      const by = cy - beam.m0 * r;
+      const color = BEAM_COLORS[beam.beam_id % BEAM_COLORS.length] || '#38bdf8';
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(bx, by, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    drawMiniSpectrum(ctx, powerDb) {
+      const w = 220, h = 140;
+      ctx.fillStyle = '#0d1117';
+      ctx.fillRect(0, 0, w, h);
+
+      const n = powerDb.length;
+      if (!n) return;
+      const stride = Math.max(1, Math.floor(n / 168));
+      const minDb = -45.0, maxDb = 10.0;
+
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      let first = true;
+      for (let i = 0; i < n; i += stride) {
+        const x = (i / (n - 1)) * (w - 8) + 4;
+        const norm = Math.max(0, Math.min(1, (powerDb[i] - minDb) / (maxDb - minDb)));
+        const y = h - 6 - norm * (h - 12);
+        if (first) {
+          ctx.moveTo(x, y);
+          first = false;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+    }
+  }
+
+  function switchViewMode(mode) {
+    currentViewMode = mode;
+    if (mode === 'grid') {
+      if (mapPanel) mapPanel.style.display = 'none';
+      if (specPanel) specPanel.style.display = 'none';
+      if (allBeamsPanel) allBeamsPanel.style.display = 'block';
+      if (btnViewSingle) btnViewSingle.classList.remove('active');
+      if (btnViewGrid) btnViewGrid.classList.add('active');
+
+      if (!historyAllFetched) {
+        historyAllFetched = true;
+        fetch('/api/history/all?limit=120')
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data && allBeamsGrid) allBeamsGrid.setHistoryAll(data);
+          })
+          .catch(() => {});
+      }
+      if (allBeamsGrid) allBeamsGrid.scheduleRender();
+    } else {
+      if (mapPanel) mapPanel.style.display = 'block';
+      if (specPanel) specPanel.style.display = 'block';
+      if (allBeamsPanel) allBeamsPanel.style.display = 'none';
+      if (btnViewSingle) btnViewSingle.classList.add('active');
+      if (btnViewGrid) btnViewGrid.classList.remove('active');
+      requestAnimationFrame(drawSkyMap);
+      requestAnimationFrame(drawSpectrometer);
+    }
+  }
+
+  if (btnViewSingle) btnViewSingle.addEventListener('click', () => switchViewMode('overview'));
+  if (btnViewGrid) btnViewGrid.addEventListener('click', () => switchViewMode('grid'));
+  if (btnViewSingleGrid) btnViewSingleGrid.addEventListener('click', () => switchViewMode('overview'));
+  if (btnViewGridActive) btnViewGridActive.addEventListener('click', () => switchViewMode('grid'));
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      if (currentViewMode === 'overview') {
+        requestAnimationFrame(drawSkyMap);
+        requestAnimationFrame(drawSpectrometer);
+      } else if (allBeamsGrid) {
+        allBeamsGrid.scheduleRender();
+      }
+    }
+  });
+
+  if (allBeamsGridEl) {
+    allBeamsGrid = new AllBeamsGridRenderer(allBeamsGridEl, (beamId) => {
+      selectBeam(beamId);
     });
   }
 

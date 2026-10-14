@@ -129,7 +129,7 @@ async def test_poller_corner_cases(mock_status):
     # queue full/empty coverage
     q = poller.subscribe()
 
-    async def mock_put_nowait(*args, **kwargs):
+    def mock_put_nowait(*args, **kwargs):
         raise asyncio.QueueFull()
 
     q.put_nowait = mock_put_nowait
@@ -137,7 +137,7 @@ async def test_poller_corner_cases(mock_status):
 
     q.qsize = lambda: 10
 
-    async def mock_get_nowait():
+    def mock_get_nowait():
         raise asyncio.QueueEmpty()
 
     q.get_nowait = mock_get_nowait

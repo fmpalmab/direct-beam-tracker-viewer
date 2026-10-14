@@ -10,7 +10,9 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import (
+    Depends,
     FastAPI,
+    Header,
     HTTPException,
     WebSocket,
     WebSocketDisconnect,
@@ -44,6 +46,7 @@ def create_app(
     settings: Settings | None = None,
     client: TrackerClient | None = None,
     poller: StatusPoller | None = None,
+    routine: RoutineRunner | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application."""
     if settings is None:
@@ -52,8 +55,7 @@ def create_app(
     if client is None:
         client = TrackerClient(base_url=settings.kotekan_url)
 
-    routine: RoutineRunner | None = None
-    if settings.routine_enabled:
+    if routine is None and settings.routine_enabled:
         catalog = load_targets(settings.routine_targets_path)
         schedule = generate_schedule(
             catalog,
@@ -97,6 +99,21 @@ def create_app(
 
     # --- API Routes ---
 
+    async def verify_token(
+        x_api_token: str | None = Header(None, alias="X-API-Token"),
+        authorization: str | None = Header(None),
+    ) -> None:
+        if not settings.api_token:
+            return
+        token = x_api_token
+        if not token and authorization and authorization.startswith("Bearer "):
+            token = authorization[7:].strip()
+        if token != settings.api_token:
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized: invalid or missing API token",
+            )
+
     @app.get("/api/status", response_model=Status)
     async def get_status() -> Status:
         """Return the latest polled tracker status."""
@@ -111,6 +128,12 @@ def create_app(
     async def get_history(beam_id: int = 0) -> list[BeamSample]:
         """Return the ring buffer history of (l0, m0) positions for a beam."""
         return poller.history(beam_id)
+
+    @app.get("/api/history/all", response_model=dict[int, list[BeamSample]])
+    async def get_all_history(limit: int = 120) -> dict[int, list[BeamSample]]:
+        """Return recent (l0, m0) history for all beams in a single request."""
+        clamped_limit = max(10, min(600, limit))
+        return poller.all_history(max_points=clamped_limit)
 
     @app.get("/api/health")
     async def get_health() -> dict[str, object]:
@@ -159,7 +182,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Routine not enabled")
         return routine.schedule.model_dump()
 
-    @app.post("/api/routine/apply")
+    @app.post("/api/routine/apply", dependencies=[Depends(verify_token)])
     async def apply_routine_now() -> dict[str, object]:
         """Force-apply the routine slot that is current right now."""
         if routine is None:
@@ -172,7 +195,7 @@ def create_app(
             ) from exc
         return {"status": "ok", "state": state.model_dump()}
 
-    @app.post("/api/beams/{beam_id}/target")
+    @app.post("/api/beams/{beam_id}/target", dependencies=[Depends(verify_token)])
     async def steer_beam_target(
         beam_id: int = PathParam(..., ge=0, le=15), req: TargetRequest = ...
     ) -> dict[str, str]:
@@ -180,13 +203,15 @@ def create_app(
         req.beam_id = beam_id
         try:
             reply = await client.set_target(req)
+            if routine is not None:
+                routine.names.pop(beam_id, None)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
             raise HTTPException(
                 status_code=exc.status_code, detail=exc.message
             ) from exc
 
-    @app.post("/api/beams/{beam_id}/celestial")
+    @app.post("/api/beams/{beam_id}/celestial", dependencies=[Depends(verify_token)])
     async def steer_beam_celestial(
         beam_id: int = PathParam(..., ge=0, le=15), req: CelestialRequest = ...
     ) -> dict[str, str]:
@@ -194,13 +219,15 @@ def create_app(
         req.beam_id = beam_id
         try:
             reply = await client.set_celestial_target(req)
+            if routine is not None:
+                routine.names.pop(beam_id, None)
             return {"status": "ok", "message": reply}
         except TrackerError as exc:
             raise HTTPException(
                 status_code=exc.status_code, detail=exc.message
             ) from exc
 
-    @app.post("/api/beams/enable")
+    @app.post("/api/beams/enable", dependencies=[Depends(verify_token)])
     async def enable_beams(req: EnableBeamsRequest) -> dict[str, str]:
         """Set the number of active beams."""
         try:
@@ -211,7 +238,7 @@ def create_app(
                 status_code=exc.status_code, detail=exc.message
             ) from exc
 
-    @app.post("/api/antennas/mask")
+    @app.post("/api/antennas/mask", dependencies=[Depends(verify_token)])
     async def mask_antenna(req: MaskAntennaRequest) -> dict[str, str]:
         """Mask or unmask an antenna element."""
         try:
@@ -222,7 +249,7 @@ def create_app(
                 status_code=exc.status_code, detail=exc.message
             ) from exc
 
-    @app.post("/api/interpolation")
+    @app.post("/api/interpolation", dependencies=[Depends(verify_token)])
     async def set_interpolation(req: InterpolationRequest) -> dict[str, str]:
         """Toggle phase interpolation."""
         try:
@@ -243,8 +270,8 @@ def create_app(
 
         if routine is not None:
             try:
-                await ws.send_json(
-                    {"type": "routine", "data": routine.state().model_dump()}
+                await ws.send_text(
+                    f'{{"type":"routine","data":{routine.state().model_dump_json()}}}'
                 )
             except Exception:
                 pass
@@ -261,8 +288,8 @@ def create_app(
         latest_spec = poller.spectrometer_latest()
         if latest_spec is not None:
             try:
-                await ws.send_json(
-                    {"type": "spectrometer", "data": latest_spec.model_dump()}
+                await ws.send_text(
+                    f'{{"type":"spectrometer","data":{latest_spec.model_dump_json()}}}'
                 )
             except Exception:
                 pass
@@ -275,12 +302,16 @@ def create_app(
         async def push_spectrometer() -> None:
             while True:
                 spec = await spec_q.get()
-                await ws.send_json({"type": "spectrometer", "data": spec.model_dump()})
+                await ws.send_text(
+                    f'{{"type":"spectrometer","data":{spec.model_dump_json()}}}'
+                )
 
         async def push_routine() -> None:
             while True:
                 state = await routine_q.get()
-                await ws.send_json({"type": "routine", "data": state.model_dump()})
+                await ws.send_text(
+                    f'{{"type":"routine","data":{state.model_dump_json()}}}'
+                )
 
         async def reader() -> None:
             try:
@@ -301,6 +332,7 @@ def create_app(
         finally:
             for task in tasks:
                 task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if routine_q is not None:
                 routine.unsubscribe(routine_q)
             poller.unsubscribe(status_q)

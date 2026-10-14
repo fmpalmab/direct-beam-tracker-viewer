@@ -131,3 +131,23 @@ async def test_spectrometer_poller_and_broadcast(sample_status: Status) -> None:
 
     poller.unsubscribe_spectrometer(spec_q)
     await poller.stop()
+
+
+def test_all_history() -> None:
+    from viewer.models import BeamSample
+
+    client = AsyncMock(spec=TrackerClient)
+    poller = StatusPoller(client=client, interval=0.2, history=50)
+
+    # Populate dummy history
+    for i in range(10):
+        poller._history[0].append(BeamSample(ts=float(i), l0=0.1 * i, m0=0.2 * i))
+        poller._history[1].append(BeamSample(ts=float(i), l0=-0.1 * i, m0=-0.2 * i))
+
+    hist_all = poller.all_history(max_points=5)
+    assert 0 in hist_all
+    assert 1 in hist_all
+    assert len(hist_all[0]) == 5
+    assert len(hist_all[1]) == 5
+    # Should get most recent 5
+    assert hist_all[0][-1].ts == 9.0

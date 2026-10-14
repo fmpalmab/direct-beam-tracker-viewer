@@ -9,6 +9,7 @@ import numpy as np
 from viewer.models import BeamInfo, CelestialTarget, Status
 from viewer.spectrometer import (
     CHANNELS_PER_STREAM,
+    FREQUENCIES_ALL_MHZ,
     TOTAL_CHANNELS,
     SpectrometerProcessor,
     compute_power_spectrum,
@@ -135,3 +136,52 @@ def test_processor_fallback_synthetic() -> None:
     assert len(b0.power_db) == TOTAL_CHANNELS
     assert b0.stats["max"] > b0.stats["min"]
     assert b0.stats["mean"] < 0.0  # Should be negative dB floor
+
+
+def test_generate_synthetic_spectrum_array() -> None:
+    processor = SpectrometerProcessor()
+    freqs = np.asarray(FREQUENCIES_ALL_MHZ, dtype=np.float64)
+    arr = processor.generate_synthetic_spectrum_array(
+        beam_id=0, target_name="Sagittarius A*", freqs=freqs
+    )
+    assert isinstance(arr, np.ndarray)
+    assert arr.shape == (TOTAL_CHANNELS,)
+    assert arr.dtype == np.float32 or arr.dtype == np.float64
+    assert np.all(arr <= 0.0)
+    assert np.all(arr >= -100.0)
+
+    # Legacy helper returns list of floats
+    lst = processor.generate_synthetic_spectrum(
+        beam_id=0, target_name="Sagittarius A*", frequencies=FREQUENCIES_ALL_MHZ
+    )
+    assert isinstance(lst, list)
+    assert len(lst) == TOTAL_CHANNELS
+    assert isinstance(lst[0], float)
+
+
+def test_target_identification_with_catalog_targets() -> None:
+    catalog_targets = [
+        {"label": "NGC 1316 (Fornax A)", "ra_deg": 50.675, "dec_deg": -37.2083},
+        {"label": "NGC 253 (Sculptor)", "ra_deg": 11.8875, "dec_deg": -25.2883},
+    ]
+    b = BeamInfo(
+        beam_id=3,
+        celestial_target=CelestialTarget(is_set=True, ra_deg=50.68, dec_deg=-37.21),
+    )
+    assert (
+        identify_celestial_target(b, catalog_targets=catalog_targets)
+        == "NGC 1316 (Fornax A)"
+    )
+
+
+def test_processor_effective_max_beams() -> None:
+    processor = SpectrometerProcessor()
+    # status has 2 active beams, but 10 configured beams in status.beams
+    status = Status(
+        num_active_beams=2,
+        beams=[BeamInfo(beam_id=i) for i in range(10)],
+    )
+    spec_data = processor.process(None, None, status, max_beams=2, cadence_s=0.25)
+    assert spec_data.num_channels == TOTAL_CHANNELS
+    assert len(spec_data.beams) == 2
+    assert len(spec_data.frequencies_mhz) == TOTAL_CHANNELS

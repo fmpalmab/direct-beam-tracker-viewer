@@ -29,9 +29,15 @@
   <main class="main-layout">
     <!-- Left Column: Sky Map & Line Spectrometer -->
     <section class="panel-column left-column">
-      <div class="panel map-panel">
+      <div class="panel map-panel" id="map-panel">
         <div class="panel-header">
-          <h2>Topocentric Sky Map (l, m)</h2>
+          <div class="panel-title-group">
+            <h2>Topocentric Sky Map (l, m)</h2>
+          </div>
+          <div class="view-switch-buttons">
+            <button class="btn btn-sm btn-secondary active" id="btn-view-single" title="Large Polar Map & Spectrometer">Overview</button>
+            <button class="btn btn-sm btn-secondary" id="btn-view-grid" title="Multi-Square All Beams Grid">All Beams Grid</button>
+          </div>
           <div class="map-legend" id="map-legend"></div>
         </div>
         <div class="canvas-container">
@@ -41,6 +47,24 @@
           <span>Projection: Polar $(l, m)$ in ENU topocentric frame</span>
           <span id="cursor-coords">l: -- , m: --</span>
         </div>
+      </div>
+
+      <!-- All Beams Side-by-Side Multi-Square Grid -->
+      <div class="panel all-beams-panel" id="all-beams-panel" style="display: none;">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>All Beams Trackers & Spectra</h2>
+            <span class="cadence-badge" id="grid-active-badge">Active</span>
+          </div>
+          <div class="view-switch-buttons">
+            <button class="btn btn-sm btn-secondary" id="btn-view-single-grid" title="Back to Overview">Overview</button>
+            <button class="btn btn-sm btn-secondary active" id="btn-view-grid-active" title="Multi-Square All Beams Grid">All Beams Grid</button>
+          </div>
+        </div>
+        <div class="map-footer" style="border-top: none; border-bottom: 1px solid var(--border-color); margin-bottom: 8px;">
+          <span>Side-by-side (l, m) sky square and live spectrum per beam. Click square to select.</span>
+        </div>
+        <div class="all-beams-grid" id="all-beams-grid"></div>
       </div>
 
       <!-- Output Beams Line Spectrometer (1 Hz) -->

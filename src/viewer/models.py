@@ -59,6 +59,7 @@ class SpectrometerData(BaseModel):
     timestamp: float
     cadence_s: float = 1.0
     num_channels: int = 672
+    frequencies_mhz: list[float] = Field(default_factory=list)
     beams: dict[int, BeamSpectrum] = Field(default_factory=dict)
 
 
@@ -72,18 +73,20 @@ class TargetRequest(BaseModel):
     m1: float | None = None
     dl: float | None = None
     dm: float | None = None
-    # Support 'l' and 'm' as alternative field names
-    l: float | None = None  # noqa: E741
-    m: float | None = None
+    # Support 'l' and 'm' as alternative field names, excluded from serialization
+    l: float | None = Field(default=None, exclude=True)  # noqa: E741
+    m: float | None = Field(default=None, exclude=True)
 
     @model_validator(mode="before")
     @classmethod
     def resolve_aliases(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            if "l0" not in data and "l" in data:
-                data["l0"] = data["l"]
-            if "m0" not in data and "m" in data:
-                data["m0"] = data["m"]
+            out = dict(data)
+            if out.get("l0") is None and out.get("l") is not None:
+                out["l0"] = out["l"]
+            if out.get("m0") is None and out.get("m") is not None:
+                out["m0"] = out["m"]
+            return out
         return data
 
     @model_validator(mode="after")

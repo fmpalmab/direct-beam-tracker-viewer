@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from typing import Any
 
 import numpy as np
 
@@ -78,13 +79,27 @@ def power_to_db(power: np.ndarray, floor_db: float = -60.0) -> np.ndarray:
     return np.maximum(db, floor_db)
 
 
-def identify_celestial_target(beam: BeamInfo | None) -> str:
+def identify_celestial_target(
+    beam: BeamInfo | None,
+    catalog_targets: list[Any] | None = None,
+) -> str:
     """Identify common astronomical targets from coordinates."""
     if beam is None or not beam.celestial_target.is_set:
         return ""
 
     ra = beam.celestial_target.ra_deg or 0.0
     dec = beam.celestial_target.dec_deg or 0.0
+
+    if catalog_targets:
+        for tgt in catalog_targets:
+            tgt_ra = getattr(tgt, "ra_deg", None)
+            tgt_dec = getattr(tgt, "dec_deg", None)
+            tgt_label = getattr(tgt, "label", None)
+            if tgt_ra is not None and tgt_dec is not None and tgt_label:
+                if math.isclose(ra, tgt_ra, abs_tol=1.0) and math.isclose(
+                    dec, tgt_dec, abs_tol=1.0
+                ):
+                    return str(tgt_label)
 
     # Sagittarius A* / Galactic Center: RA ~ 266.42°, Dec ~ -29.01°
     if math.isclose(ra, 266.4168, abs_tol=1.0) and math.isclose(
@@ -157,16 +172,14 @@ class SpectrometerProcessor:
         self._rng = np.random.default_rng(seed)
         self._phase_step = 0.0
 
-    def generate_synthetic_spectrum(
+    def generate_synthetic_spectrum_array(
         self,
         beam_id: int,
         target_name: str,
-        frequencies: list[float],
-        timestamp: float,
-    ) -> list[float]:
-        """Generate physically realistic synthetic spectrum for testing or offline ingest."""
-        freqs = np.array(frequencies, dtype=np.float64)
-        n = len(freqs)
+        freqs: np.ndarray,
+    ) -> np.ndarray:
+        """Generate synthetic spectrum directly as a rounded 1D numpy array."""
+        n = freqs.size
         self._phase_step += 0.08
 
         # Noise floor: -28 dB with channel ripples
@@ -195,7 +208,20 @@ class SpectrometerProcessor:
             peak = 9.0 * np.exp(-((freqs - center_mhz) ** 2) / 400.0)
             spec = base_db + peak
 
-        return [round(float(v), 2) for v in spec]
+        return np.round(spec, 2)
+
+    def generate_synthetic_spectrum(
+        self,
+        beam_id: int,
+        target_name: str,
+        frequencies: list[float],
+        timestamp: float = 0.0,
+    ) -> list[float]:
+        """Backwards-compatible wrapper returning list[float]."""
+        freqs = np.asarray(frequencies, dtype=np.float64)
+        return self.generate_synthetic_spectrum_array(
+            beam_id, target_name, freqs
+        ).tolist()
 
     def process(
         self,
@@ -204,6 +230,7 @@ class SpectrometerProcessor:
         status: Status | None = None,
         max_beams: int = 2,
         beam_names: dict[int, str] | None = None,
+        cadence_s: float = 1.0,
     ) -> SpectrometerData:
         """Process incoming raw buffers from Stream 0 and Stream 1.
 
@@ -217,7 +244,8 @@ class SpectrometerProcessor:
             status.num_active_beams if status and status.num_active_beams > 0 else 2
         )
         active_beams = max(1, min(num_active, 16))
-        effective_max_beams = max(max_beams, active_beams)
+        configured_beams = len(status.beams) if (status and status.beams) else max_beams
+        effective_max_beams = max(max_beams, configured_beams, active_beams)
 
         # 1. Attempt to unpack real buffers
         arr_0 = unpack_formed_beams(buf_0, CHANNELS_PER_STREAM, effective_max_beams)
@@ -252,6 +280,10 @@ class SpectrometerProcessor:
             combined_db = None
             freqs = FREQUENCIES_ALL_MHZ
 
+        if combined_db is not None:
+            combined_db = np.round(combined_db, 2)
+        freqs_arr = np.asarray(freqs, dtype=np.float64)
+
         for b_idx in range(active_beams):
             beam_info = beam_info_map.get(b_idx)
             target_name = (beam_names or {}).get(b_idx) or identify_celestial_target(
@@ -262,13 +294,12 @@ class SpectrometerProcessor:
                 label += f" ({target_name})"
 
             if combined_db is not None and b_idx < combined_db.shape[1]:
-                spec_vals = [round(float(v), 2) for v in combined_db[:, b_idx]]
+                spec_arr = combined_db[:, b_idx]
             else:
-                spec_vals = self.generate_synthetic_spectrum(
-                    b_idx, target_name, freqs, now
+                spec_arr = self.generate_synthetic_spectrum_array(
+                    b_idx, target_name, freqs_arr
                 )
 
-            spec_arr = np.array(spec_vals, dtype=np.float64)
             peak_idx = int(np.argmax(spec_arr))
             stats = {
                 "min": round(float(np.min(spec_arr)), 2),
@@ -283,13 +314,14 @@ class SpectrometerProcessor:
                 label=label,
                 target_name=target_name or None,
                 frequencies_mhz=freqs,
-                power_db=spec_vals,
+                power_db=spec_arr.tolist(),
                 stats=stats,
             )
 
         return SpectrometerData(
             timestamp=now,
-            cadence_s=1.0,
+            cadence_s=cadence_s,
             num_channels=len(freqs),
+            frequencies_mhz=freqs,
             beams=beam_spectra,
         )

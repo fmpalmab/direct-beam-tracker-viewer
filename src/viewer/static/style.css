@@ -603,3 +603,91 @@ input:focus, select:focus {
 .spec-stats span strong {
   color: var(--text-highlight);
 }
+
+/* All Beams Grid View */
+.view-switch-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.view-switch-buttons .btn.active {
+  background-color: var(--accent-cyan);
+  color: #0b0f17;
+  font-weight: 600;
+}
+
+.all-beams-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(370px, 1fr));
+  gap: 12px;
+  padding: 12px 0;
+  max-height: 880px;
+  overflow-y: auto;
+}
+
+.beam-square-card {
+  background-color: var(--bg-panel-alt);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+  contain: content;
+}
+
+.beam-square-card:hover {
+  border-color: var(--accent-cyan);
+  transform: translateY(-1px);
+}
+
+.beam-square-card.selected {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
+}
+
+.beam-square-card.inactive {
+  opacity: 0.45;
+  filter: grayscale(0.5);
+}
+
+.beam-square-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.beam-square-title {
+  font-weight: 600;
+  color: var(--text-highlight);
+}
+
+.beam-square-meta {
+  color: var(--text-dim);
+}
+
+.beam-square-canvases {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+}
+
+.beam-sky-canvas {
+  width: 140px;
+  height: 140px;
+  border-radius: 4px;
+  background-color: #0d1117;
+  border: 1px solid var(--border-color);
+}
+
+.beam-spec-canvas {
+  width: 220px;
+  height: 140px;
+  border-radius: 4px;
+  background-color: #0d1117;
+  border: 1px solid var(--border-color);
+}
+

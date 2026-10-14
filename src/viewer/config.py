@@ -15,10 +15,11 @@ class Settings:
     poll_interval: float = 0.5
     spectrometer_interval: float = 1.0
     routine_enabled: bool = False
-    routine_targets_path: str = "tools/verified_targets.json"
+    routine_targets_path: str = "tools/verified_targets_10beams.json"
     routine_num_beams: int = 10
     routine_step_minutes: int = 60
     routine_by_priority: bool = False
+    api_token: str | None = None
 
 
 def parse_args(args: list[str] | None = None) -> Settings:
@@ -67,8 +68,10 @@ def parse_args(args: list[str] | None = None) -> Settings:
     parser.add_argument(
         "--routine-targets",
         dest="routine_targets_path",
-        default=os.environ.get("ROUTINE_TARGETS", "tools/verified_targets.json"),
-        help="Path to verified_targets.json catalog (default: tools/verified_targets.json)",
+        default=os.environ.get(
+            "ROUTINE_TARGETS", "tools/verified_targets_10beams.json"
+        ),
+        help="Path to verified_targets.json catalog (default: tools/verified_targets_10beams.json)",
     )
     parser.add_argument(
         "--routine-beams",
@@ -91,6 +94,12 @@ def parse_args(args: list[str] | None = None) -> Settings:
         default=os.environ.get("ROUTINE_BY_PRIORITY", "") not in ("", "0", "false"),
         help="Sort routine candidate targets by priority rank",
     )
+    parser.add_argument(
+        "--api-token",
+        dest="api_token",
+        default=os.environ.get("VIEWER_API_TOKEN", None),
+        help="Optional secret token for authenticating mutating POST endpoints",
+    )
 
     parsed = parser.parse_args(args)
     # Floor at 0.2 s — never faster to prevent overloading kotekan
@@ -108,4 +117,5 @@ def parse_args(args: list[str] | None = None) -> Settings:
         routine_num_beams=max(1, min(16, int(parsed.routine_num_beams))),
         routine_step_minutes=max(5, int(parsed.routine_step_minutes)),
         routine_by_priority=bool(parsed.routine_by_priority),
+        api_token=parsed.api_token,
     )

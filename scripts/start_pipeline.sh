@@ -11,7 +11,11 @@ CONFIG_FILE="${KOTEKAN_DIR}/charts/config/64antennas_direct_tracker.yaml"
 KOTEKAN_BIN="${KOTEKAN_DIR}/build/kotekan/kotekan"
 KOTEKAN_LOG="${KOTEKAN_DIR}/kotekan_run.log"
 VIEWER_LOG="${VIEWER_DIR}/viewer.log"
-SUDO_PASS="FP_Charts123!"
+if [[ -n "${SUDO_PASS:-}" ]]; then
+    SUDO_CMD="echo '${SUDO_PASS}' | sudo -S"
+else
+    SUDO_CMD="sudo"
+fi
 
 echo "[1/4] Checking environment..."
 if [[ ! -x "${KOTEKAN_BIN}" ]]; then
@@ -20,17 +24,17 @@ if [[ ! -x "${KOTEKAN_BIN}" ]]; then
 fi
 
 echo "[2/4] Cleaning stale hugepages & stopping old instances..."
-echo "${SUDO_PASS}" | sudo -S rm -f /dev/hugepages/rtemap_* 2>/dev/null || true
-echo "${SUDO_PASS}" | sudo -S pkill -9 -f "${KOTEKAN_BIN}" 2>/dev/null || true
+eval "${SUDO_CMD} rm -f /dev/hugepages/rtemap_* 2>/dev/null" || true
+eval "${SUDO_CMD} pkill -9 -f '${KOTEKAN_BIN}' 2>/dev/null" || true
 pkill -9 -f "uv run viewer" 2>/dev/null || true
 pkill -9 -f "python.*viewer" 2>/dev/null || true
 sleep 1
 
 echo "[3/4] Starting Kotekan 24h Direct Beam Tracker in background..."
 if command -v screen >/dev/null 2>&1; then
-    screen -dmS kotekan bash -c "echo '${SUDO_PASS}' | sudo -S '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
+    screen -dmS kotekan bash -c "${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
 else
-    nohup bash -c "echo '${SUDO_PASS}' | sudo -S '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
+    nohup bash -c "${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
 fi
 
 echo "Waiting for Kotekan REST API on port 12048..."

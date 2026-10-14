@@ -44,7 +44,7 @@ class TrackerClient:
     ) -> httpx.Response:
         try:
             return await self._client.request(method, path, **kwargs)
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError):
             logger.warning("Connection failed on %s %s, retrying once...", method, path)
             return await self._client.request(method, path, **kwargs)
 
@@ -68,11 +68,7 @@ class TrackerClient:
 
     async def set_target(self, req: TargetRequest) -> str:
         """Steer a beam by direction cosines: POST /direct_tracker/set_target."""
-        data = {
-            k: v
-            for k, v in req.model_dump().items()
-            if v is not None and k not in ("l", "m")
-        }
+        data = req.model_dump(exclude_none=True)
         resp = await self._request_with_retry(
             "POST", "/direct_tracker/set_target", json=data
         )

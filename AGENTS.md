@@ -69,10 +69,10 @@ cd /home/fpalma/direct-beam-tracker-viewer
 #### Step 1: Start Kotekan in a detached screen
 ```bash
 # Clean up any stale DPDK hugepages first:
-echo 'FP_Charts123!' | sudo -S rm -f /dev/hugepages/rtemap_*
+sudo rm -f /dev/hugepages/rtemap_*
 
 # Launch Kotekan inside a screen named 'kotekan':
-screen -dmS kotekan bash -c "echo 'FP_Charts123!' | sudo -S /home/fpalma/kotekan/build/kotekan/kotekan -c /home/fpalma/kotekan/charts/config/64antennas_direct_tracker.yaml -b 127.0.0.1:12048 2>&1 | tee /home/fpalma/kotekan/kotekan_run.log"
+screen -dmS kotekan bash -c "sudo /home/fpalma/kotekan/build/kotekan/kotekan -c /home/fpalma/kotekan/charts/config/64antennas_direct_tracker.yaml -b 127.0.0.1:12048 2>&1 | tee /home/fpalma/kotekan/kotekan_run.log"
 ```
 
 #### Step 2: Start the Viewer in a detached screen
@@ -89,7 +89,7 @@ cd /home/fpalma/direct-beam-tracker-viewer
 ./scripts/start_routine_10beams.sh
 
 # Or manually in screens:
-screen -dmS kotekan bash -c "echo 'FP_Charts123!' | sudo -S /home/fpalma/kotekan/build/kotekan/kotekan -c /home/fpalma/kotekan/charts/config/64antennas_direct_tracker_10beams.yaml -b 127.0.0.1:12048 2>&1 | tee /home/fpalma/kotekan/kotekan_run.log"
+screen -dmS kotekan bash -c "sudo /home/fpalma/kotekan/build/kotekan/kotekan -c /home/fpalma/kotekan/charts/config/64antennas_direct_tracker_10beams.yaml -b 127.0.0.1:12048 2>&1 | tee /home/fpalma/kotekan/kotekan_run.log"
 
 screen -dmS viewer bash -c "cd /home/fpalma/direct-beam-tracker-viewer && uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048 --routine --routine-targets verified_targets_10beams.json --routine-beams 10 --routine-step-minutes 60 2>&1 | tee /home/fpalma/direct-beam-tracker-viewer/viewer.log"
 ```
@@ -211,7 +211,7 @@ http://localhost:8088
 * **DPDK Hugepage Permission Denied**:
   If Kotekan fails with `open /dev/hugepages/rtemap_* Permission denied`, clean stale hugepage allocations from previous runs:
   ```bash
-  echo 'FP_Charts123!' | sudo -S rm -f /dev/hugepages/rtemap_*
+  sudo rm -f /dev/hugepages/rtemap_*
   ```
 * **Kotekan Process Check**:
   ```bash
