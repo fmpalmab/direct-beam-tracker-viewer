@@ -90,6 +90,39 @@ async def test_set_interpolation(mock_client: TrackerClient, mock_backend) -> No
 
 
 @pytest.mark.asyncio
+async def test_get_inspect_frame_success(
+    mock_client: TrackerClient, mock_backend
+) -> None:
+    frame = await mock_client.get_inspect_frame("host_formed_beams_buffer_0")
+    assert frame == b"\x00\x01\x02\x03raw_frame_data"
+
+    last_req = mock_backend.last_request
+    assert last_req["method"] == "GET"
+    assert last_req["path"] == "/inspect_frame/host_formed_beams_buffer_0"
+
+
+@pytest.mark.asyncio
+async def test_get_inspect_frame_non_200(
+    mock_client: TrackerClient, mock_backend
+) -> None:
+    frame = await mock_client.get_inspect_frame("not_found_buffer")
+    assert frame is None
+
+
+@pytest.mark.asyncio
+async def test_get_inspect_frame_exception() -> None:
+    def exception_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Failed to connect to kotekan inspect buffer")
+
+    transport = httpx.MockTransport(exception_handler)
+    http_client = httpx.AsyncClient(transport=transport, base_url="http://mock")
+    client = TrackerClient(base_url="http://mock", client=http_client)
+
+    frame = await client.get_inspect_frame("host_formed_beams_buffer_0")
+    assert frame is None
+
+
+@pytest.mark.asyncio
 async def test_tracker_error_passthrough() -> None:
     def error_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, text="Invalid parameter in stage")

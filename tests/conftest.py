@@ -147,6 +147,12 @@ class MockKotekanBackend:
             self.subframe_interpolation_enabled = bool(body.get("enabled", False))
             return httpx.Response(200, text="Interpolation updated")
 
+        if method == "GET" and path.startswith("/inspect_frame/"):
+            buf_name = path[len("/inspect_frame/") :]
+            if buf_name == "not_found_buffer":
+                return httpx.Response(404, text="Buffer not found")
+            return httpx.Response(200, content=b"\x00\x01\x02\x03raw_frame_data")
+
         return httpx.Response(404, text="Not Found")
 
 
