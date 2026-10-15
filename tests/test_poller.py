@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from pydantic import ValidationError
 
 from viewer.client import TrackerClient, TrackerError
 from viewer.models import BeamInfo, Status
@@ -55,6 +57,37 @@ async def test_poller_lifecycle_and_broadcast(sample_status: Status) -> None:
     assert hist[0].l0 == 0.15
     assert hist[0].m0 == -0.25
 
+    poller.unsubscribe(q)
+    await poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_poller_handles_httpx_and_validation_errors(
+    sample_status: Status,
+) -> None:
+    client = AsyncMock(spec=TrackerClient)
+    client.get_inspect_frame.return_value = None
+    validation_err = ValidationError.from_exception_data("Status", [])
+    client.get_status.side_effect = [
+        sample_status,
+        httpx.ConnectError("Connection refused"),
+        validation_err,
+    ] + [sample_status] * 20
+
+    poller = StatusPoller(client=client, interval=0.05, history=10)
+    q = poller.subscribe()
+
+    await poller.start()
+
+    # 1. First poll success
+    s1 = await asyncio.wait_for(q.get(), timeout=1.0)
+    assert s1.active_antennas == 16
+    assert poller.healthy is True
+
+    # 2. Wait for httpx and validation errors to be handled and recover
+    s2 = await asyncio.wait_for(q.get(), timeout=1.0)
+    assert s2.active_antennas == 16
+    assert poller.healthy is True
     poller.unsubscribe(q)
     await poller.stop()
 

@@ -8,7 +8,10 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 
-from .client import TrackerClient
+import httpx
+from pydantic import ValidationError
+
+from .client import TrackerClient, TrackerError
 from .models import BeamSample, SpectrometerData, Status
 from .spectrometer import SpectrometerProcessor
 
@@ -149,7 +152,12 @@ class StatusPoller:
 
             except asyncio.CancelledError:
                 break
-            except Exception as exc:
+            except (
+                TrackerError,
+                httpx.HTTPError,
+                ValidationError,
+                RuntimeError,
+            ) as exc:
                 self.healthy = False
                 if not self._logged_error:
                     logger.warning("Error polling kotekan status: %s", exc)
@@ -196,7 +204,12 @@ class StatusPoller:
 
             except asyncio.CancelledError:
                 break
-            except Exception as exc:
+            except (
+                TrackerError,
+                httpx.HTTPError,
+                ValidationError,
+                RuntimeError,
+            ) as exc:
                 logger.debug("Error updating spectrometer: %s", exc)
 
             elapsed = time.monotonic() - t0
