@@ -79,6 +79,22 @@ def power_to_db(power: np.ndarray, floor_db: float = -60.0) -> np.ndarray:
     return np.maximum(db, floor_db)
 
 
+KNOWN_CELESTIAL_TARGETS: tuple[tuple[str, float, float], ...] = (
+    ("Sagittarius A*", 266.4168, -29.0078),
+    ("Vela Pulsar", 128.8361, -45.1764),
+    ("Crab Pulsar", 83.6331, 22.0145),
+    ("NGC 1316 (Fornax A)", 50.6750, -37.2083),
+    ("PSR B0826-34", 127.0417, -34.2900),
+    ("NGC 253 (Sculptor)", 11.8875, -25.2883),
+    ("Fornax Cluster Core", 54.6208, -35.4508),
+    ("Centaurus A", 201.3667, -43.0192),
+    ("The Antennae", 180.4708, -18.8694),
+    ("Pictor A", 79.7500, -45.7667),
+    ("Hydra A", 139.5000, -12.0833),
+    ("NGC 612", 23.4917, -36.4933),
+)
+
+
 def identify_celestial_target(
     beam: BeamInfo | None,
     catalog_targets: list[Any] | None = None,
@@ -101,66 +117,11 @@ def identify_celestial_target(
                 ):
                     return str(tgt_label)
 
-    # Sagittarius A* / Galactic Center: RA ~ 266.42°, Dec ~ -29.01°
-    if math.isclose(ra, 266.4168, abs_tol=1.0) and math.isclose(
-        dec, -29.0078, abs_tol=1.0
-    ):
-        return "Sagittarius A*"
-    # Vela Pulsar (PSR B0833-45): RA ~ 128.84°, Dec ~ -45.18°
-    if math.isclose(ra, 128.8361, abs_tol=1.0) and math.isclose(
-        dec, -45.1764, abs_tol=1.0
-    ):
-        return "Vela Pulsar"
-    # Crab Pulsar (PSR B0531+21): RA ~ 83.63°, Dec ~ +22.01°
-    if math.isclose(ra, 83.6331, abs_tol=1.0) and math.isclose(
-        dec, 22.0145, abs_tol=1.0
-    ):
-        return "Crab Pulsar"
-    # NGC 1316 (Fornax A): RA ~ 50.68°, Dec ~ -37.21°
-    if math.isclose(ra, 50.6750, abs_tol=1.0) and math.isclose(
-        dec, -37.2083, abs_tol=1.0
-    ):
-        return "NGC 1316 (Fornax A)"
-    # PSR B0826-34: RA ~ 127.04°, Dec ~ -34.29°
-    if math.isclose(ra, 127.0417, abs_tol=1.0) and math.isclose(
-        dec, -34.2900, abs_tol=1.0
-    ):
-        return "PSR B0826-34"
-    # NGC 253 (Sculptor): RA ~ 11.89°, Dec ~ -25.29°
-    if math.isclose(ra, 11.8875, abs_tol=1.0) and math.isclose(
-        dec, -25.2883, abs_tol=1.0
-    ):
-        return "NGC 253 (Sculptor)"
-    # Fornax Cluster Core: RA ~ 54.62°, Dec ~ -35.45°
-    if math.isclose(ra, 54.6208, abs_tol=1.0) and math.isclose(
-        dec, -35.4508, abs_tol=1.0
-    ):
-        return "Fornax Cluster Core"
-    # Centaurus A (NGC 5128): RA ~ 201.37°, Dec ~ -43.02°
-    if math.isclose(ra, 201.3667, abs_tol=1.0) and math.isclose(
-        dec, -43.0192, abs_tol=1.0
-    ):
-        return "Centaurus A"
-    # The Antennae (NGC 4038/39): RA ~ 180.47°, Dec ~ -18.87°
-    if math.isclose(ra, 180.4708, abs_tol=1.0) and math.isclose(
-        dec, -18.8694, abs_tol=1.0
-    ):
-        return "The Antennae"
-    # Pictor A: RA ~ 79.75°, Dec ~ -45.77°
-    if math.isclose(ra, 79.7500, abs_tol=1.0) and math.isclose(
-        dec, -45.7667, abs_tol=1.0
-    ):
-        return "Pictor A"
-    # Hydra A: RA ~ 139.50°, Dec ~ -12.08°
-    if math.isclose(ra, 139.5000, abs_tol=1.0) and math.isclose(
-        dec, -12.0833, abs_tol=1.0
-    ):
-        return "Hydra A"
-    # NGC 612 (PKS 0131-36): RA ~ 23.49°, Dec ~ -36.49°
-    if math.isclose(ra, 23.4917, abs_tol=1.0) and math.isclose(
-        dec, -36.4933, abs_tol=1.0
-    ):
-        return "NGC 612"
+    for name, target_ra, target_dec in KNOWN_CELESTIAL_TARGETS:
+        if math.isclose(ra, target_ra, abs_tol=1.0) and math.isclose(
+            dec, target_dec, abs_tol=1.0
+        ):
+            return name
 
     return f"RA {ra:.2f}°, Dec {dec:.2f}°"
 

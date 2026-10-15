@@ -10,6 +10,7 @@ from viewer.models import BeamInfo, CelestialTarget, Status
 from viewer.spectrometer import (
     CHANNELS_PER_STREAM,
     FREQUENCIES_ALL_MHZ,
+    KNOWN_CELESTIAL_TARGETS,
     TOTAL_CHANNELS,
     SpectrometerProcessor,
     compute_power_spectrum,
@@ -55,21 +56,18 @@ def test_compute_power_and_db() -> None:
 
 
 def test_target_identification() -> None:
-    b0 = BeamInfo(
-        beam_id=0,
-        celestial_target=CelestialTarget(
-            is_set=True, ra_deg=266.4168, dec_deg=-29.0078
-        ),
-    )
-    assert identify_celestial_target(b0) == "Sagittarius A*"
+    for name, ra, dec in KNOWN_CELESTIAL_TARGETS:
+        b = BeamInfo(
+            beam_id=0,
+            celestial_target=CelestialTarget(is_set=True, ra_deg=ra, dec_deg=dec),
+        )
+        assert identify_celestial_target(b) == name
 
-    b1 = BeamInfo(
-        beam_id=1,
-        celestial_target=CelestialTarget(
-            is_set=True, ra_deg=128.8361, dec_deg=-45.1764
-        ),
-    )
-    assert identify_celestial_target(b1) == "Vela Pulsar"
+    b_unset = BeamInfo(beam_id=0, celestial_target=CelestialTarget(is_set=False))
+    assert identify_celestial_target(b_unset) == ""
+
+    b_none = None
+    assert identify_celestial_target(b_none) == ""
 
     b_other = BeamInfo(
         beam_id=2,
