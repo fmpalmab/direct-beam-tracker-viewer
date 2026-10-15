@@ -280,6 +280,7 @@ class SpectrometerProcessor:
             combined_db = None
             freqs = FREQUENCIES_ALL_MHZ
 
+        # Vectorized 2D NumPy rounding across all frequencies and beams (replaces Python list loop)
         if combined_db is not None:
             combined_db = np.round(combined_db, 2)
         freqs_arr = np.asarray(freqs, dtype=np.float64)
