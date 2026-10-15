@@ -78,6 +78,37 @@ async def test_mask_antenna(mock_client: TrackerClient, mock_backend) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_inspect_frame_success(
+    mock_client: TrackerClient, mock_backend
+) -> None:
+    frame = await mock_client.get_inspect_frame("test_buffer")
+    assert frame == b"\x00\x01\x02\x03"
+
+    last_req = mock_backend.last_request
+    assert last_req["method"] == "GET"
+    assert last_req["path"] == "/inspect_frame/test_buffer"
+
+
+@pytest.mark.asyncio
+async def test_get_inspect_frame_not_found(mock_client: TrackerClient) -> None:
+    frame = await mock_client.get_inspect_frame("nonexistent_buffer")
+    assert frame is None
+
+
+@pytest.mark.asyncio
+async def test_get_inspect_frame_exception() -> None:
+    def exception_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RequestError("Network error", request=request)
+
+    transport = httpx.MockTransport(exception_handler)
+    http_client = httpx.AsyncClient(transport=transport, base_url="http://mock")
+    client = TrackerClient(base_url="http://mock", client=http_client)
+
+    frame = await client.get_inspect_frame("some_buffer")
+    assert frame is None
+
+
+@pytest.mark.asyncio
 async def test_set_interpolation(mock_client: TrackerClient, mock_backend) -> None:
     reply = await mock_client.set_interpolation(enabled=False)
     assert "Interpolation" in reply

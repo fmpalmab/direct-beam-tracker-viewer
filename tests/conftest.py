@@ -68,6 +68,16 @@ class MockKotekanBackend:
             }
             return httpx.Response(200, json=data)
 
+        if method == "GET" and path.startswith("/inspect_frame/"):
+            buffer_name = path.removeprefix("/inspect_frame/")
+            if buffer_name in (
+                "host_formed_beams_buffer_0",
+                "host_formed_beams_buffer_1",
+                "test_buffer",
+            ):
+                return httpx.Response(200, content=b"\x00\x01\x02\x03")
+            return httpx.Response(404, text="Buffer Not Found")
+
         if method == "POST" and path == "/direct_tracker/set_target":
             body = json.loads(request.content)
             beam_id = body.get("beam_id", 0)
