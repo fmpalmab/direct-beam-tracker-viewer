@@ -315,3 +315,17 @@ def test_steer_clears_routine_name(
         )
         assert res.status_code == 200
         assert 1 not in routine.names
+
+
+def test_apply_routine_now_no_routine_returns_404(
+    mock_client: TrackerClient, test_settings: Settings
+) -> None:
+    poller = StatusPoller(client=mock_client, interval=0.2, history=50)
+    app = create_app(
+        settings=test_settings, client=mock_client, poller=poller, routine=None
+    )
+
+    with TestClient(app) as client:
+        res = client.post("/api/routine/apply")
+        assert res.status_code == 404
+        assert res.json()["detail"] == "Routine not enabled"
