@@ -81,6 +81,19 @@ async def test_client_aclose_owns_client():
 def test_models_validation_errors():
     from pydantic import ValidationError
 
+    # Valid string lengths
+    req_valid = TargetRequest(frame="J2000", source_name="Galactic Center")
+    assert req_valid.frame == "J2000"
+    assert req_valid.source_name == "Galactic Center"
+
+    # Frame exceeding max_length=32
+    with pytest.raises(ValidationError):
+        TargetRequest(frame="A" * 33)
+
+    # Source name exceeding max_length=128
+    with pytest.raises(ValidationError):
+        TargetRequest(source_name="B" * 129)
+
     with pytest.raises(ValidationError):
         TargetRequest(beam_id=16)
 
