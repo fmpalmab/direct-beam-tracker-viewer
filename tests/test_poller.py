@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from viewer.client import TrackerClient, TrackerError
@@ -105,6 +106,59 @@ async def test_subscriber_queue_overflow_protection(sample_status: Status) -> No
     # Queue size should be capped without hanging or raising QueueFull
     assert q.qsize() <= 15
     poller.unsubscribe(q)
+
+
+@pytest.mark.asyncio
+async def test_spectrometer_poller_error_handling(
+    sample_status: Status, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = AsyncMock(spec=TrackerClient)
+    client.get_status.return_value = sample_status
+
+    errors = [
+        TrackerError(500, "Server error"),
+        httpx.HTTPError("HTTP connection dropped"),
+        ValueError("Invalid binary frame size"),
+        RuntimeError("Unexpected error"),
+    ]
+    call_count = 0
+
+    async def mock_get_inspect_frame(buffer_name: str) -> bytes | None:
+        nonlocal call_count
+        # Only raise on stream 0 so gather handles one failure per iteration
+        if buffer_name == "host_formed_beams_buffer_0" and call_count < len(errors):
+            err = errors[call_count]
+            call_count += 1
+            raise err
+        return None
+
+    client.get_inspect_frame.side_effect = mock_get_inspect_frame
+
+    poller = StatusPoller(
+        client=client,
+        interval=0.05,
+        spectrometer_interval=0.05,
+        history=5,
+    )
+
+    with caplog.at_level("WARNING"):
+        await poller.start()
+        await asyncio.sleep(0.8)
+        await poller.stop()
+
+    assert (
+        "Network/client error updating spectrometer: Tracker error 500: Server error"
+        in caplog.text
+    )
+    assert (
+        "Network/client error updating spectrometer: HTTP connection dropped"
+        in caplog.text
+    )
+    assert (
+        "Data processing error updating spectrometer: Invalid binary frame size"
+        in caplog.text
+    )
+    assert "Unexpected error updating spectrometer: Unexpected error" in caplog.text
 
 
 @pytest.mark.asyncio
