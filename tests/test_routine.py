@@ -191,6 +191,30 @@ async def test_runner_retries_after_failure(
     assert runner.last_error is None
 
 
+async def test_runner_subscribe_and_unsubscribe(
+    mock_client, dense_catalog_path
+) -> None:
+    sched = generate_schedule(load_targets(dense_catalog_path), num_beams=4)
+    runner = RoutineRunner(client=mock_client, schedule=sched)
+
+    q = runner.subscribe()
+    assert q in runner._subscribers
+
+    state = runner.state()
+    runner._broadcast(state)
+    assert not q.empty()
+    assert q.get_nowait() == state
+
+    runner.unsubscribe(q)
+    assert q not in runner._subscribers
+
+    runner._broadcast(state)
+    assert q.empty()
+
+    # Unsubscribing a non-member queue should be safe and non-raising
+    runner.unsubscribe(q)
+
+
 # --- Server integration ---
 
 
