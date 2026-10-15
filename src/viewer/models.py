@@ -73,6 +73,10 @@ class TargetRequest(BaseModel):
     m1: float | None = None
     dl: float | None = None
     dm: float | None = None
+    frame: str = Field(default="J2000", max_length=32, description="Coordinate frame")
+    source_name: str | None = Field(
+        default=None, max_length=128, description="Name of target"
+    )
     # Support 'l' and 'm' as alternative field names, excluded from serialization
     l: float | None = Field(default=None, exclude=True)  # noqa: E741
     m: float | None = Field(default=None, exclude=True)
