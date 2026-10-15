@@ -42,6 +42,15 @@ from .routine import RoutineRunner, RoutineState, generate_schedule, load_target
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+async def _send_ws_text(ws: WebSocket, text: str) -> bool:
+    """Send a text message over WebSocket, returning False on error."""
+    try:
+        await ws.send_text(text)
+        return True
+    except Exception:
+        return False
+
+
 def create_app(
     settings: Settings | None = None,
     client: TrackerClient | None = None,
@@ -269,30 +278,22 @@ def create_app(
         routine_q = routine.subscribe() if routine is not None else None
 
         if routine is not None:
-            try:
-                await ws.send_text(
-                    f'{{"type":"routine","data":{routine.state().model_dump_json()}}}'
-                )
-            except Exception:
-                pass
+            await _send_ws_text(
+                ws, f'{{"type":"routine","data":{routine.state().model_dump_json()}}}'
+            )
 
         latest = poller.latest()
         if latest is not None:
-            try:
-                await ws.send_text(latest.model_dump_json())
-            except Exception:
+            if not await _send_ws_text(ws, latest.model_dump_json()):
                 poller.unsubscribe(status_q)
                 poller.unsubscribe_spectrometer(spec_q)
                 return
 
         latest_spec = poller.spectrometer_latest()
         if latest_spec is not None:
-            try:
-                await ws.send_text(
-                    f'{{"type":"spectrometer","data":{latest_spec.model_dump_json()}}}'
-                )
-            except Exception:
-                pass
+            await _send_ws_text(
+                ws, f'{{"type":"spectrometer","data":{latest_spec.model_dump_json()}}}'
+            )
 
         async def push_status() -> None:
             while True:
