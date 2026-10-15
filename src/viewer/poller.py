@@ -8,7 +8,9 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 
-from .client import TrackerClient
+import httpx
+
+from .client import TrackerClient, TrackerError
 from .models import BeamSample, SpectrometerData, Status
 from .spectrometer import SpectrometerProcessor
 
@@ -196,8 +198,14 @@ class StatusPoller:
 
             except asyncio.CancelledError:
                 break
+            except (httpx.HTTPError, TrackerError) as exc:
+                logger.warning("Network/client error updating spectrometer: %s", exc)
+            except (ValueError, TypeError, AttributeError) as exc:
+                logger.warning("Data processing error updating spectrometer: %s", exc)
             except Exception as exc:
-                logger.debug("Error updating spectrometer: %s", exc)
+                logger.error(
+                    "Unexpected error updating spectrometer: %s", exc, exc_info=True
+                )
 
             elapsed = time.monotonic() - t0
             sleep_time = max(0.01, self.spectrometer_interval - elapsed)
