@@ -413,10 +413,17 @@ class RoutineRunner:
             reply = await self.client.set_num_active_beams(n)
             self._active_beams_set = n
             logger.info("Routine: enable_beam -> %d (%s)", n, reply.strip())
-        for a in slot.assignments:
-            reply = await self.client.set_celestial_target(
-                CelestialRequest(beam_id=a.beam_id, ra_deg=a.ra_deg, dec_deg=a.dec_deg)
+        results = await asyncio.gather(
+            *(
+                self.client.set_celestial_target(
+                    CelestialRequest(
+                        beam_id=a.beam_id, ra_deg=a.ra_deg, dec_deg=a.dec_deg
+                    )
+                )
+                for a in slot.assignments
             )
+        )
+        for a, reply in zip(slot.assignments, results, strict=False):
             self.names[a.beam_id] = a.label
             logger.info(
                 "Routine %s: beam %d -> %s (RA %.4f, Dec %.4f, alt %.1f deg) %s",
