@@ -161,6 +161,12 @@ class InterpolationRequest(BaseModel):
     enabled: bool
 
 
+class AutoDetectRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool
+
+
 class BeamPowerResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -198,6 +204,7 @@ class AntennaMetricItem(BaseModel):
     kurtosis: float = 3.0
     robust_z_score: float = 0.0
     status: str = "nominal"
+    spectrum_db: list[float] = Field(default_factory=list)
 
 
 class AntennaMaskStatus(BaseModel):
@@ -258,6 +265,26 @@ class CorrelatorDiagnostics(BaseModel):
     num_channels: int = 672
     num_elements: int = 64
     bandpass_db: list[float] = Field(default_factory=list)
-    amplitude_matrix: list[list[float]] = Field(default_factory=list)  # 64x64
-    phase_matrix: list[list[float]] = Field(default_factory=list)  # 64x64
+    amplitude_matrix: list[list[float]] = Field(default_factory=list)  # 64x64 raw mean amplitude
+    phase_matrix: list[list[float]] = Field(default_factory=list)  # 64x64 mean phase
+    coherence_matrix: list[list[float]] = Field(default_factory=list)  # 64x64 normalized coherence [0, 1]
+    auto_db: list[float] = Field(default_factory=list)  # 64 auto power in dB
     reference_fringes: dict[int, ReferenceFringe] = Field(default_factory=dict)
+    antenna_spectra_db: list[list[float]] = Field(default_factory=list)  # 64 x 84 mini spectra
+    full_antenna_spectra_db: list[list[float]] = Field(
+        default_factory=list
+    )  # 64 x 672 full spectra
+
+
+class BaselineSpectrumResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    antenna_a: int = 0
+    antenna_b: int = 0
+    frequencies_mhz: list[float] = Field(default_factory=list)
+    amplitude: list[float] = Field(default_factory=list)
+    phase_rad: list[float] = Field(default_factory=list)
+    real: list[float] = Field(default_factory=list)
+    imag: list[float] = Field(default_factory=list)
+    delay_ns: float = 0.0
+

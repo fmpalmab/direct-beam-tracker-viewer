@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 
 import httpx
+import numpy as np
 
 from .client import TrackerClient, TrackerError
 from .models import (
@@ -22,6 +23,7 @@ from .models import (
     Status,
 )
 from .spectrometer import (
+    FREQUENCIES_ALL_MHZ,
     SpectrometerProcessor,
     compute_correlator_diagnostics,
     format_sky_grid_frame,
@@ -66,6 +68,7 @@ class StatusPoller:
         self._latest_grid: SkyGridFrame | None = None
         self._latest_correlator: CorrelatorDiagnostics | None = None
         self._latest_antenna_mask: AntennaMaskStatus | None = None
+        self._latest_vis_cube: np.ndarray | None = None
 
         self._history: dict[int, deque[BeamSample]] = defaultdict(
             lambda: deque(maxlen=self.history_len)
@@ -109,6 +112,50 @@ class StatusPoller:
     def correlator_latest(self) -> CorrelatorDiagnostics | None:
         """Return most recently computed CorrelatorDiagnostics."""
         return self._latest_correlator
+
+    def latest_vis_cube(self) -> np.ndarray | None:
+        """Return most recent (672, 64, 64) complex visibility cube if available."""
+        return self._latest_vis_cube
+
+    def get_baseline_spectrum(self, ant_i: int, ant_j: int) -> dict[str, Any]:
+        """Return 672-channel complex visibility spectrum and delay fit for baseline (ant_i, ant_j)."""
+        ant_i = max(0, min(63, int(ant_i)))
+        ant_j = max(0, min(63, int(ant_j)))
+        if self._latest_vis_cube is not None and self._latest_vis_cube.shape[0] >= 672:
+            vis = self._latest_vis_cube[:, ant_i, ant_j]
+        else:
+            # Synthetic realistic interferometer baseline with geometric delay
+            n_f = len(FREQUENCIES_ALL_MHZ)
+            freqs = np.array(FREQUENCIES_ALL_MHZ, dtype=np.float64)
+            tau_ns = (ant_i - ant_j) * 0.354
+            phase = (2.0 * np.pi * (freqs - 300.0) * 1e6 * (tau_ns * 1e-9)) % (2 * np.pi) - np.pi
+            rng = np.random.default_rng(ant_i * 64 + ant_j)
+            amp = 0.5 + 0.3 * np.cos(np.linspace(0, 4 * np.pi, n_f)) + rng.normal(0, 0.05, n_f)
+            amp = np.clip(amp, 0.01, 1.0)
+            vis = (amp * np.exp(1j * phase)).astype(np.complex64)
+
+        amp_arr = np.abs(vis)
+        phase_arr = np.angle(vis)
+
+        # Estimate delay tau from phase gradient: dphi/df / (2*pi)
+        if len(FREQUENCIES_ALL_MHZ) > 1:
+            unwrapped = np.unwrap(phase_arr)
+            df_hz = (FREQUENCIES_ALL_MHZ[-1] - FREQUENCIES_ALL_MHZ[0]) * 1e6
+            dphi = unwrapped[-1] - unwrapped[0]
+            delay_ns = float(dphi / (2 * np.pi * max(1.0, df_hz)) * 1e9)
+        else:
+            delay_ns = 0.0
+
+        return {
+            "antenna_a": ant_i,
+            "antenna_b": ant_j,
+            "frequencies_mhz": FREQUENCIES_ALL_MHZ,
+            "amplitude": np.round(amp_arr, 4).tolist(),
+            "phase_rad": np.round(phase_arr, 4).tolist(),
+            "real": np.round(vis.real, 4).tolist(),
+            "imag": np.round(vis.imag, 4).tolist(),
+            "delay_ns": round(delay_ns, 3),
+        }
 
     def antenna_mask_latest(self) -> AntennaMaskStatus | None:
         """Return most recently fetched AntennaMaskStatus."""
@@ -340,18 +387,24 @@ class StatusPoller:
 
     def _make_synthetic_antenna_mask(self) -> AntennaMaskStatus:
         """Generate nominal fallback AntennaMaskStatus for 64 antennas."""
-        items = [
-            AntennaMetricItem(
-                antenna_id=i,
-                enabled=True,
-                power_rms=8.0,
-                clip_fraction=0.001,
-                kurtosis=3.0,
-                robust_z_score=0.0,
-                status="nominal",
+        rng = np.random.default_rng(42)
+        base_curve = 12.0 + 3.0 * np.sin(np.linspace(0, 3 * np.pi, 84))
+        items = []
+        for i in range(64):
+            noise = rng.normal(0, 0.4, 84)
+            spec = np.round(base_curve + noise + rng.uniform(-1.0, 1.0), 1).tolist()
+            items.append(
+                AntennaMetricItem(
+                    antenna_id=i,
+                    enabled=True,
+                    power_rms=8.0 + float(rng.uniform(-0.5, 0.5)),
+                    clip_fraction=0.001,
+                    kurtosis=3.0,
+                    robust_z_score=0.0,
+                    status="nominal",
+                    spectrum_db=spec,
+                )
             )
-            for i in range(64)
-        ]
         return AntennaMaskStatus(
             num_elements=64,
             num_antennas=64,
@@ -368,17 +421,7 @@ class StatusPoller:
         """1 Hz loop polling antenna mask and correlation visibilities."""
         while self._running:
             t0 = time.monotonic()
-            # 1. Antenna Mask
-            try:
-                mask_status = await self.client.get_antenna_mask_status()
-                self._latest_antenna_mask = mask_status
-                self._broadcast_antenna_mask(mask_status)
-            except Exception:
-                if self._latest_antenna_mask is None:
-                    self._latest_antenna_mask = self._make_synthetic_antenna_mask()
-                self._broadcast_antenna_mask(self._latest_antenna_mask)
-
-            # 2. Correlator Visibilities
+            # 1. Correlator Visibilities
             try:
                 buf_0, buf_1 = await asyncio.gather(
                     self.client.get_inspect_frame("integrated_correlation_buffer_0"),
@@ -386,16 +429,52 @@ class StatusPoller:
                 )
                 vis_0 = unpack_astron_visibilities(buf_0)
                 vis_1 = unpack_astron_visibilities(buf_1)
-                corr_diag = compute_correlator_diagnostics(
-                    subband_0=vis_0, subband_1=vis_1
-                )
+                if vis_0 is not None and vis_1 is not None:
+                    vis_cube = np.concatenate([vis_0, vis_1], axis=0)
+                    self._latest_vis_cube = vis_cube
+                    corr_diag = compute_correlator_diagnostics(vis_cube=vis_cube)
+                elif vis_0 is not None:
+                    self._latest_vis_cube = vis_0
+                    corr_diag = compute_correlator_diagnostics(subband_0=vis_0)
+                else:
+                    self._latest_vis_cube = None
+                    corr_diag = compute_correlator_diagnostics(
+                        subband_0=vis_0, subband_1=vis_1
+                    )
                 self._latest_correlator = corr_diag
                 self._broadcast_correlator(corr_diag)
             except Exception as exc:
                 logger.debug("Correlator polling error, using fallback: %s", exc)
+                self._latest_vis_cube = None
                 corr_diag = compute_correlator_diagnostics()
                 self._latest_correlator = corr_diag
                 self._broadcast_correlator(corr_diag)
+
+            # 2. Antenna Mask
+            try:
+                mask_status = await self.client.get_antenna_mask_status()
+                # Attach antenna spectra from correlator diagnostics if available
+                if corr_diag and corr_diag.antenna_spectra_db:
+                    for i, ant in enumerate(mask_status.antennas):
+                        if i < len(corr_diag.antenna_spectra_db):
+                            # If antenna is disabled, flatline its displayed spectrum
+                            if not ant.enabled:
+                                ant.spectrum_db = [0.0] * len(corr_diag.antenna_spectra_db[i])
+                            else:
+                                ant.spectrum_db = corr_diag.antenna_spectra_db[i]
+                self._latest_antenna_mask = mask_status
+                self._broadcast_antenna_mask(mask_status)
+            except Exception:
+                if self._latest_antenna_mask is None:
+                    self._latest_antenna_mask = self._make_synthetic_antenna_mask()
+                if corr_diag and corr_diag.antenna_spectra_db:
+                    for i, ant in enumerate(self._latest_antenna_mask.antennas):
+                        if i < len(corr_diag.antenna_spectra_db):
+                            if not ant.enabled:
+                                ant.spectrum_db = [0.0] * len(corr_diag.antenna_spectra_db[i])
+                            else:
+                                ant.spectrum_db = corr_diag.antenna_spectra_db[i]
+                self._broadcast_antenna_mask(self._latest_antenna_mask)
 
             elapsed = time.monotonic() - t0
             sleep_time = max(0.01, self.correlator_interval - elapsed)

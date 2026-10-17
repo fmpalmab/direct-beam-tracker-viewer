@@ -206,3 +206,28 @@ async def test_get_antenna_mask_status(
     assert ams.blank_voltages_enabled is True
     assert len(ams.subbands) == 2
     assert len(ams.antennas) == 64
+
+
+@pytest.mark.asyncio
+async def test_set_auto_detect(mock_client: TrackerClient, mock_backend) -> None:
+    reply = await mock_client.set_auto_detect(False)
+    assert "updated successfully" in reply
+    assert mock_backend.auto_detect_enabled is False
+
+    last_req = mock_backend.last_request
+    assert last_req["method"] == "POST"
+    assert last_req["path"] == "/antenna_mask/configure"
+    payload = json.loads(last_req["body"])
+    assert payload == {"auto_detect_enabled": False}
+
+    # Re-enable
+    reply2 = await mock_client.set_auto_detect(True)
+    assert "updated successfully" in reply2
+    assert mock_backend.auto_detect_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_reset_antenna_masks(mock_client: TrackerClient, mock_backend) -> None:
+    reply = await mock_client.reset_antenna_masks()
+    assert "reset to active" in reply
+    assert mock_backend.active_antennas == 64

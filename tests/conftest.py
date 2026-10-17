@@ -19,6 +19,7 @@ class MockKotekanBackend:
     def __init__(self) -> None:
         self.active_antennas: int = 32
         self.active_raw_elements: list[int] = [0, 1, 2, 3, 4]
+        self.auto_detect_enabled: bool = True
         self.num_active_beams: int = 2
         self.subframe_interpolation_enabled: bool = True
         self.beams: list[dict[str, Any]] = [
@@ -118,7 +119,7 @@ class MockKotekanBackend:
             data = {
                 "num_elements": 64,
                 "num_antennas": 64,
-                "auto_detect_enabled": True,
+                "auto_detect_enabled": self.auto_detect_enabled,
                 "blank_voltages_enabled": True,
                 "manual_mask": [
                     1 if i in self.active_raw_elements else 0 for i in range(64)
@@ -248,6 +249,19 @@ class MockKotekanBackend:
             body = json.loads(request.content)
             self.subframe_interpolation_enabled = bool(body.get("enabled", False))
             return httpx.Response(200, text="Interpolation updated")
+
+        if method == "POST" and path == "/antenna_mask/configure":
+            body = json.loads(request.content)
+            if "auto_detect_enabled" in body:
+                self.auto_detect_enabled = bool(body["auto_detect_enabled"])
+            return httpx.Response(
+                200, text="Antenna mask configuration updated successfully\n"
+            )
+
+        if method == "POST" and path == "/antenna_mask/reset":
+            self.active_raw_elements = list(range(64))
+            self.active_antennas = 64
+            return httpx.Response(200, text="All antenna masks reset to active\n")
 
         return httpx.Response(404, text="Not Found")
 

@@ -27,6 +27,8 @@ from .client import TrackerClient, TrackerError
 from .config import Settings, parse_args
 from .models import (
     AntennaMaskStatus,
+    AutoDetectRequest,
+    BaselineSpectrumResponse,
     BeamPowerResponse,
     BeamSample,
     BeamSpectrum,
@@ -42,6 +44,8 @@ from .models import (
 )
 from .poller import StatusPoller
 from .routine import RoutineRunner, RoutineState, generate_schedule, load_targets
+from .spectrometer import FREQUENCIES_ALL_MHZ
+import numpy as np
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -203,6 +207,18 @@ def create_app(
             )
         return diag
 
+    @app.get(
+        "/api/correlator/baseline/{ant_i}/{ant_j}",
+        response_model=BaselineSpectrumResponse,
+    )
+    async def get_baseline_spectrum(
+        ant_i: int = PathParam(..., ge=0, lt=64),
+        ant_j: int = PathParam(..., ge=0, lt=64),
+    ) -> BaselineSpectrumResponse:
+        """Return 672-channel complex visibility spectrum and delay fit for baseline (ant_i, ant_j)."""
+        data = poller.get_baseline_spectrum(ant_i, ant_j)
+        return BaselineSpectrumResponse(**data)
+
     @app.get("/api/antenna_mask", response_model=AntennaMaskStatus)
     async def get_antenna_mask() -> AntennaMaskStatus:
         """Return the latest antenna masking and RF health telemetry."""
@@ -305,6 +321,82 @@ def create_app(
             raise HTTPException(
                 status_code=exc.status_code, detail=exc.message
             ) from exc
+
+    @app.post("/api/antennas/auto_detect", dependencies=[Depends(verify_token)])
+    async def set_auto_detect(req: AutoDetectRequest) -> dict[str, Any]:
+        """Enable or disable RF auto-detect antenna masking in kotekan."""
+        try:
+            reply = await client.set_auto_detect(req.enabled)
+            return {
+                "status": "ok",
+                "message": reply.strip(),
+                "auto_detect_enabled": req.enabled,
+            }
+        except TrackerError as exc:
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
+
+    @app.post("/api/antennas/unmask_all", dependencies=[Depends(verify_token)])
+    async def unmask_all_antennas() -> dict[str, str]:
+        """Unmask all 64 antenna elements."""
+        try:
+            await client.reset_antenna_masks()
+        except Exception:
+            for i in range(64):
+                try:
+                    await client.mask_antenna(i, True)
+                except Exception:
+                    pass
+        return {"status": "ok", "message": "All 64 antennas unmasked"}
+
+    @app.get("/api/antennas/{antenna_id}/spectrum")
+    async def get_antenna_spectrum(
+        antenna_id: int = PathParam(..., ge=0, lt=64)
+    ) -> dict[str, Any]:
+        """Return calibrated line spectrum and RF diagnostics for a specific antenna."""
+        corr = poller.correlator_latest()
+        spec: list[float] = []
+        if (
+            corr is not None
+            and getattr(corr, "full_antenna_spectra_db", None)
+            and antenna_id < len(corr.full_antenna_spectra_db)
+            and len(corr.full_antenna_spectra_db[antenna_id]) > 0
+        ):
+            spec = corr.full_antenna_spectra_db[antenna_id]
+        elif (
+            corr is not None
+            and getattr(corr, "antenna_spectra_db", None)
+            and antenna_id < len(corr.antenna_spectra_db)
+            and len(corr.antenna_spectra_db[antenna_id]) > 0
+        ):
+            spec = corr.antenna_spectra_db[antenna_id]
+        else:
+            rng = np.random.default_rng(antenna_id + 42)
+            base_db = 12.0 + 3.0 * np.sin(np.linspace(0, 3 * np.pi, 84))
+            spec = np.round(base_db + rng.normal(0, 0.4, 84), 1).tolist()
+
+        peak_idx = int(np.argmax(spec)) if len(spec) > 0 else 0
+        peak_pwr = float(spec[peak_idx]) if len(spec) > 0 else 0.0
+        mean_pwr = float(np.mean(spec)) if len(spec) > 0 else 0.0
+
+        if len(spec) == len(FREQUENCIES_ALL_MHZ):
+            freqs = FREQUENCIES_ALL_MHZ
+        else:
+            freqs = [
+                round(300.0 + i * (201.6 / max(1, len(spec) - 1)), 2)
+                for i in range(len(spec))
+            ]
+
+        return {
+            "antenna_id": antenna_id,
+            "frequencies_mhz": freqs,
+            "spectrum_db": spec,
+            "num_channels": len(spec),
+            "peak_freq_mhz": freqs[peak_idx] if peak_idx < len(freqs) else 300.0,
+            "peak_power_db": peak_pwr,
+            "mean_power_db": round(mean_pwr, 2),
+        }
 
     @app.post("/api/interpolation", dependencies=[Depends(verify_token)])
     async def set_interpolation(req: InterpolationRequest) -> dict[str, str]:

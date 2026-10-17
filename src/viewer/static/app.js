@@ -37,27 +37,55 @@
   let latestAntennaMask = null;
 
   // Tab 1 (Tracker) State
+  // Tab 1 (Tracker) State
   let selectedBeamId = 0;
   let beamTrails = {};
   let specViewMode = 'all';
+  let trackerSpecMode = 'overlay'; // 'overlay', 'small-mult', 'sky'
   let specHover = { active: false, x: 0, y: 0 };
   let specZoom = { fMin: 300.0, fMax: 501.3, dbMin: -45.0, dbMax: 10.0, userZoomed: false };
   let waterfallHistory = []; // array of { timestamp, powers: [672] }
+  let waterfallHistoriesByBeam = {}; // { [beamId]: array of { timestamp, power } }
   let waterfallBeamId = 0;
   const MAX_WATERFALL_ROWS = 90;
 
-  // Tab 2 (Grid Camera) State
+  // Tab 2 (Grid Camera) State & Persistent Decoupled Offscreen Rings
   let gridSliceMode = 'full'; // 'full', 'sub0', 'sub1'
   let gridDisplayMode = 'contour'; // 'contour', 'cells'
+  let gridViewMode = 'camera'; // 'camera', 'waterfalls'
   let gridHover = { active: false, x: 0, y: 0, row: -1, col: -1, beamId: -1 };
 
+  const GRID_BEAMS = 16;
+  const FREQ_BINS = 168; // e.g. 672 channels downsampled 4x, or full 672
+  const HISTORY_LEN = 80;
+
+  // Initialize 16 persistent offscreen waterfall buffers (independent of DOM visibility)
+  const gridOffscreen = Array.from({ length: GRID_BEAMS }, () => {
+    const c = document.createElement('canvas');
+    c.width = FREQ_BINS;
+    c.height = HISTORY_LEN;
+    return {
+      canvas: c,
+      ctx: c.getContext('2d', { willReadFrequently: true }),
+      rowImage: c.getContext('2d').createImageData(FREQ_BINS, 1)
+    };
+  });
+
   // Tab 3 (Correlator) State
+  let corrViewMode = 'split'; // 'split', 'dual'
+  let baselineAntA = 0;
+  let baselineAntB = 4;
+  let latestBaselineData = null;
   let fringeAntenna = 4; // one of 0, 4, 6, 8, 32
   let fringeMode = 'ri'; // 'ri', 'amp', 'phase'
   let corrAmpHover = { active: false, i: -1, j: -1, val: 0 };
   let corrPhaseHover = { active: false, i: -1, j: -1, val: 0 };
+  let corrSplitHover = { active: false, i: -1, j: -1, isUpper: true, val: 0 };
   let bandpassHover = { active: false, freq: 0, power: 0 };
   let fringeHover = { active: false, freq: 0, val: 0 };
+
+  // Tab 4 (Array) State
+  let antViewMode = 'canvas'; // 'canvas', 'cards'
 
   // --- DOM Elements ---
   // Header
@@ -69,7 +97,7 @@
   const routineSummary = document.getElementById('routine-summary');
   const toast = document.getElementById('toast-message');
 
-  // Tab 1 Elements
+  // Tab 1 Elements (Zone A, B, C)
   const skyCanvas = document.getElementById('sky-canvas');
   const skyCtx = skyCanvas ? skyCanvas.getContext('2d') : null;
   const cursorCoords = document.getElementById('cursor-coords');
@@ -95,6 +123,13 @@
   const lmBeamSelect = document.getElementById('lm-beam-id');
   const celBeamSelect = document.getElementById('cel-beam-id');
   const celPresetSelect = document.getElementById('cel-preset-select');
+  const btnToggleSteerDrawer = document.getElementById('btn-toggle-steer-drawer');
+  const steerDrawer = document.getElementById('steer-drawer');
+  const btnCloseSteerDrawer = document.getElementById('btn-close-steer-drawer');
+  const btnModeOverlay = document.getElementById('btn-mode-overlay');
+  const btnModeSmallMult = document.getElementById('btn-mode-small-mult');
+  const btnModeSky = document.getElementById('btn-mode-sky');
+  const multiWaterfallStack = document.getElementById('multi-waterfall-stack');
 
   // Tab 2 Elements
   const gridCanvas = document.getElementById('grid-canvas');
@@ -106,8 +141,19 @@
   const gridBeamTbody = document.getElementById('grid-beam-tbody');
   const gridCbMin = document.getElementById('grid-cb-min');
   const gridCbMax = document.getElementById('grid-cb-max');
+  const btnViewCamera = document.getElementById('btn-view-camera');
+  const btnViewWaterfalls = document.getElementById('btn-view-waterfalls');
+  const gridCameraView = document.getElementById('grid-camera-view');
+  const gridWaterfallsPanel = document.getElementById('grid-waterfalls-panel');
+  const gridWaterfallsMatrix = document.getElementById('grid-waterfalls-matrix');
 
   // Tab 3 Elements
+  const btnCorrViewSplit = document.getElementById('btn-corr-view-split');
+  const btnCorrViewDual = document.getElementById('btn-corr-view-dual');
+  const corrSplitCard = document.getElementById('corr-split-card');
+  const corrDualLayout = document.getElementById('corr-dual-layout');
+  const corrSplitCanvas = document.getElementById('corr-split-canvas');
+  const corrSplitHoverEl = document.getElementById('corr-split-hover');
   const corrAmpCanvas = document.getElementById('corr-amp-canvas');
   const corrAmpCtx = corrAmpCanvas ? corrAmpCanvas.getContext('2d') : null;
   const corrAmpHoverEl = document.getElementById('corr-amp-hover');
@@ -121,16 +167,61 @@
   const fringeCanvas = document.getElementById('fringe-canvas');
   const fringeCtx = fringeCanvas ? fringeCanvas.getContext('2d') : null;
   const fringeHoverEl = document.getElementById('fringe-hover');
+  const baselineInspectorTitle = document.getElementById('baseline-inspector-title');
+  const baselineDelayBadge = document.getElementById('baseline-delay-badge');
+  const baseAntAInput = document.getElementById('base-ant-a');
+  const baseAntBInput = document.getElementById('base-ant-b');
+  const btnInspectBaseline = document.getElementById('btn-inspect-baseline');
 
   // Tab 4 Elements
   const rfActiveBadge = document.getElementById('rf-active-badge');
   const rfMaskedBadge = document.getElementById('rf-masked-badge');
   const rfAutodetectBadge = document.getElementById('rf-autodetect-badge');
+  const pillAutodetect = document.getElementById('pill-autodetect');
   const rfBlankingBadge = document.getElementById('rf-blanking-badge');
   const arrayGrid8x8 = document.getElementById('array-grid-8x8');
+  const btnToggleAutodetect = document.getElementById('btn-toggle-autodetect');
   const btnUnmaskAll = document.getElementById('btn-unmask-all');
+  const btnMaskAll = document.getElementById('btn-mask-all');
+  const btnInvertMask = document.getElementById('btn-invert-mask');
+  const btnAntViewCanvas = document.getElementById('btn-ant-view-canvas');
+  const btnAntViewCards = document.getElementById('btn-ant-view-cards');
+  const antennaMaskCanvasWrap = document.getElementById('antenna-mask-canvas-wrap');
+  const antennaMaskCanvas = document.getElementById('antenna-mask-canvas');
+  const antennaMaskHoverEl = document.getElementById('antenna-mask-hover');
+  const antMasterTitle = document.getElementById('ant-master-title');
+  const antMasterBadge = document.getElementById('ant-master-badge');
+  const antMasterTile = document.getElementById('ant-master-tile');
+  const antMasterPeak = document.getElementById('ant-master-peak');
+  const antMasterMean = document.getElementById('ant-master-mean');
+  const antMasterRms = document.getElementById('ant-master-rms');
+  const antMasterClip = document.getElementById('ant-master-clip');
+  const antMasterKurt = document.getElementById('ant-master-kurt');
+  const btnToggleSelectedMask = document.getElementById('btn-toggle-selected-mask');
+  const antMasterCanvas = document.getElementById('ant-master-canvas');
+  const antMasterCtx = antMasterCanvas ? antMasterCanvas.getContext('2d') : null;
+  const antMasterHover = document.getElementById('ant-master-hover');
+  let selectedAntennaId = 0;
+  let masterAntennaHoverInfo = null;
 
   // --- Utility Functions ---
+  function resizeHiDPICanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null; // Guard against hidden tabs
+
+    const targetW = Math.round(rect.width * dpr);
+    const targetH = Math.round(rect.height * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Work in CSS pixels with HiDPI sharpness
+    ctx.imageSmoothingEnabled = false;
+    return { ctx, width: rect.width, height: rect.height };
+  }
+
   function showToast(msg, isError = false) {
     if (toastTimer) clearTimeout(toastTimer);
     toast.textContent = msg;
@@ -222,6 +313,13 @@
     return [r, g, b];
   }
 
+  function powerToColor(power_db) {
+    const val = power_db !== undefined ? power_db : 10.0;
+    const norm = Math.max(0, Math.min(1, (val - 0.0) / 25.0));
+    const rgb = viridisColor(norm);
+    return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  }
+
   // --- Navigation Tab Switching Router ---
   function initTabRouter() {
     const tabButtons = document.querySelectorAll('.nav-tab');
@@ -247,17 +345,33 @@
 
   function renderActiveTabCanvases() {
     if (activeTab === 'tab-tracker') {
-      drawSkyMap();
-      drawSpectrometer();
-      drawWaterfall();
+      if (trackerSpecMode === 'sky') {
+        drawSkyMap();
+      } else {
+        drawSpectrometer();
+      }
+      drawMultiWaterfalls();
     } else if (activeTab === 'tab-grid') {
-      drawGridHeatmap();
+      if (gridViewMode === 'camera') {
+        drawGridHeatmap();
+      } else {
+        renderGridWaterfalls();
+      }
     } else if (activeTab === 'tab-correlator') {
-      drawCorrelatorMatrices();
+      if (corrViewMode === 'split') {
+        drawSplitCorrelatorMatrix();
+      } else {
+        drawCorrelatorMatrices();
+      }
       drawBandpassSpectrum();
       drawFringePlot();
     } else if (activeTab === 'tab-array') {
-      renderArrayGrid();
+      drawMasterAntennaSpectrometer();
+      if (antViewMode === 'canvas' && latestAntennaMask && latestAntennaMask.antennas) {
+        renderAntennaMaskGrid(antennaMaskCanvas, latestAntennaMask.antennas);
+      } else {
+        renderArrayGrid();
+      }
     }
   }
 
@@ -453,7 +567,21 @@
     updateSpectrometerViewSelect(specData.beams);
     renderSpectrometerFooter(specData.beams);
 
-    // Append to waterfall history
+    // Append to waterfall history for all active beams
+    Object.keys(specData.beams).forEach(id => {
+      const bObj = specData.beams[id];
+      if (bObj && bObj.power_db && bObj.power_db.length > 0) {
+        if (!waterfallHistoriesByBeam[id]) waterfallHistoriesByBeam[id] = [];
+        waterfallHistoriesByBeam[id].unshift({
+          timestamp: specData.timestamp,
+          power: bObj.power_db
+        });
+        if (waterfallHistoriesByBeam[id].length > MAX_WATERFALL_ROWS) {
+          waterfallHistoriesByBeam[id].pop();
+        }
+      }
+    });
+
     const b = specData.beams[waterfallBeamId] || specData.beams['0'] || specData.beams[0];
     if (b && b.power_db && b.power_db.length > 0) {
       waterfallHistory.unshift({
@@ -466,8 +594,12 @@
     }
 
     if (activeTab === 'tab-tracker') {
-      requestAnimationFrame(drawSpectrometer);
-      requestAnimationFrame(drawWaterfall);
+      if (trackerSpecMode === 'sky') {
+        requestAnimationFrame(drawSkyMap);
+      } else {
+        requestAnimationFrame(drawSpectrometer);
+      }
+      requestAnimationFrame(drawMultiWaterfalls);
     }
   }
 
@@ -475,6 +607,11 @@
   function handleGridUpdate(frame) {
     if (!frame) return;
     latestGrid = frame;
+
+    // Push 16-beam spectrum ring buffer (decoupled from DOM visibility)
+    if (frame.beam_power_spectra) {
+      pushGridSpectra(frame.beam_power_spectra);
+    }
 
     // Telemetry readouts
     if (gridCentroidReadout) {
@@ -499,7 +636,11 @@
     renderGridTable(frame);
 
     if (activeTab === 'tab-grid') {
-      requestAnimationFrame(drawGridHeatmap);
+      if (gridViewMode === 'camera') {
+        requestAnimationFrame(drawGridHeatmap);
+      } else {
+        requestAnimationFrame(renderGridWaterfalls);
+      }
     }
   }
 
@@ -509,9 +650,20 @@
     latestCorrelator = corr;
 
     if (activeTab === 'tab-correlator') {
-      requestAnimationFrame(drawCorrelatorMatrices);
+      if (corrViewMode === 'split') {
+        requestAnimationFrame(drawSplitCorrelatorMatrix);
+      } else {
+        requestAnimationFrame(drawCorrelatorMatrices);
+      }
       requestAnimationFrame(drawBandpassSpectrum);
       requestAnimationFrame(drawFringePlot);
+    } else if (activeTab === 'tab-array') {
+      requestAnimationFrame(drawMasterAntennaSpectrometer);
+      if (antViewMode === 'canvas' && latestAntennaMask && latestAntennaMask.antennas) {
+        requestAnimationFrame(() => renderAntennaMaskGrid(antennaMaskCanvas, latestAntennaMask.antennas));
+      } else {
+        requestAnimationFrame(renderArrayGrid);
+      }
     }
   }
 
@@ -527,13 +679,31 @@
       rfMaskedBadge.textContent = `${maskStatus.masked_antennas} / ${maskStatus.num_antennas || 64}`;
     }
     if (rfAutodetectBadge) {
-      rfAutodetectBadge.textContent = maskStatus.auto_detect_enabled ? 'ENABLED' : 'DISABLED';
+      const enabled = !!maskStatus.auto_detect_enabled;
+      rfAutodetectBadge.textContent = enabled ? 'ENABLED' : 'DISABLED';
+      rfAutodetectBadge.className = `metric-val monospace ${enabled ? 'success' : 'warning'}`;
+    }
+    if (btnToggleAutodetect) {
+      const enabled = !!maskStatus.auto_detect_enabled;
+      btnToggleAutodetect.textContent = enabled ? 'Disable Auto-Detect' : 'Enable Auto-Detect';
+      if (enabled) {
+        btnToggleAutodetect.classList.remove('btn-autodetect-off');
+      } else {
+        btnToggleAutodetect.classList.add('btn-autodetect-off');
+      }
     }
     if (rfBlankingBadge) {
       rfBlankingBadge.textContent = maskStatus.blank_voltages_enabled ? 'RTX 5090 IN-PLACE' : 'OFF';
     }
 
-    renderArrayGrid();
+    if (activeTab === 'tab-array') {
+      requestAnimationFrame(drawMasterAntennaSpectrometer);
+      if (antViewMode === 'canvas' && maskStatus.antennas) {
+        requestAnimationFrame(() => renderAntennaMaskGrid(antennaMaskCanvas, maskStatus.antennas));
+      } else {
+        requestAnimationFrame(renderArrayGrid);
+      }
+    }
   }
 
   // ==========================================================================
@@ -570,7 +740,7 @@
   function renderBeamTable(beams) {
     if (!beamTableBody) return;
     if (!beams || beams.length === 0) {
-      beamTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active tracked beams</td></tr>';
+      beamTableBody.innerHTML = '<tr><td colspan="9" class="empty-state">No active tracked beams</td></tr>';
       return;
     }
 
@@ -584,12 +754,22 @@
 
       const targetStr = b.celestial_target && b.celestial_target.is_set
         ? `${b.celestial_target.ra_deg.toFixed(2)}°, ${b.celestial_target.dec_deg.toFixed(2)}°`
-        : 'Direction cosines';
+        : '--';
 
       // Alt/Az calculation from (l, m)
       const r = Math.sqrt(b.l0 * b.l0 + b.m0 * b.m0);
       const altDeg = (90.0 - Math.asin(Math.min(1.0, r)) * 180.0 / Math.PI).toFixed(1);
       const azDeg = ((Math.atan2(b.l0, b.m0) * 180.0 / Math.PI + 360.0) % 360.0).toFixed(1);
+
+      // Seam / Phase Rate
+      let seamRateStr = 'Δφ: +0.00 rad/s';
+      if (b.dl !== undefined || b.dm !== undefined) {
+        const rate = (Math.sqrt((b.dl || 0) ** 2 + (b.dm || 0) ** 2) * 50);
+        const sign = (b.dl || 0) >= 0 ? '+' : '-';
+        seamRateStr = `Δφ: ${sign}${rate.toFixed(2)} rad/s`;
+      } else if (currentStatus && currentStatus.subframe_interpolation_enabled) {
+        seamRateStr = 'Δφ: +0.04 rad/s';
+      }
 
       // Peak dB from latest spectrometer if available
       let peakDb = '--';
@@ -601,15 +781,26 @@
       }
 
       tr.innerHTML = `
-        <td style="color: ${color}; font-weight: 700;">● Beam ${b.beam_id}</td>
+        <td style="color: ${color}; font-weight: 700;">● #${b.beam_id}</td>
         <td>${name ? `<strong>${name}</strong>` : '<span class="status-label">Manual</span>'}</td>
-        <td>(${b.l0.toFixed(4)}, ${b.m0.toFixed(4)})</td>
         <td>${targetStr}</td>
-        <td>${altDeg}°, ${azDeg}°</td>
+        <td>${azDeg}° / ${altDeg}°</td>
+        <td>(${b.l0 >= 0 ? '+' : ''}${b.l0.toFixed(4)}, ${b.m0 >= 0 ? '+' : ''}${b.m0.toFixed(4)})</td>
+        <td><span class="monospace">${seamRateStr}</span></td>
         <td><span class="monospace highlight">${peakDb}</span></td>
+        <td><span class="badge badge-xs badge-success">[TRACK]</span></td>
+        <td><button class="btn btn-xs btn-outline btn-steer-action" data-beam="${b.beam_id}">Steer</button></td>
       `;
 
       tr.addEventListener('click', () => selectBeam(b.beam_id));
+      const steerBtn = tr.querySelector('.btn-steer-action');
+      if (steerBtn) {
+        steerBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectBeam(b.beam_id);
+          if (steerDrawer) steerDrawer.classList.remove('hidden');
+        });
+      }
       beamTableBody.appendChild(tr);
     });
   }
@@ -821,18 +1012,19 @@
 
   function drawSpectrometer() {
     if (!specCanvas || !specCtx) return;
-    const w = specCanvas.width;
-    const h = specCanvas.height;
+    const setup = resizeHiDPICanvas(specCanvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
 
-    specCtx.fillStyle = '#05080f';
-    specCtx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#05080f';
+    ctx.fillRect(0, 0, width, height);
 
     if (!latestSpectrometer || !latestSpectrometer.beams) {
-      specCtx.fillStyle = '#5a7192';
-      specCtx.font = '12px ui-monospace, monospace';
-      specCtx.textAlign = 'center';
-      specCtx.textBaseline = 'middle';
-      specCtx.fillText('Awaiting 672-channel line spectrum telemetry (4 Hz)...', w / 2, h / 2);
+      ctx.fillStyle = '#5a7192';
+      ctx.font = '12px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Awaiting 672-channel line spectrum telemetry (4 Hz)...', width / 2, height / 2);
       return;
     }
 
@@ -848,54 +1040,103 @@
     const padR = 16;
     const padT = 14;
     const padB = 26;
-    const plotW = w - padL - padR;
-    const plotH = h - padT - padB;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
 
     const fMin = 300.0;
     const fMax = 501.3;
     const dbMin = -45.0;
     const dbMax = 10.0;
 
-    // Grid lines & dB ticks
-    specCtx.strokeStyle = '#121d33';
-    specCtx.lineWidth = 1;
-    specCtx.fillStyle = '#5a7192';
-    specCtx.font = '10px ui-monospace, monospace';
-    specCtx.textAlign = 'right';
-    specCtx.textBaseline = 'middle';
+    // Small-Multiples Sparklines Mode
+    if (trackerSpecMode === 'small-mult') {
+      const nPlots = Math.max(1, activeIds.length);
+      const subH = plotH / nPlots;
+
+      activeIds.forEach((id, plotIdx) => {
+        const b = beams[id];
+        if (!b.power_db || b.power_db.length === 0) return;
+        const color = BEAM_COLORS[parseInt(id, 10) % BEAM_COLORS.length];
+        const subTop = padT + plotIdx * subH;
+        const numChannels = b.power_db.length;
+
+        // Label
+        ctx.fillStyle = color;
+        ctx.font = '600 10px ui-monospace, monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`Beam #${id} (${beamName(id) || 'Manual'})`, padL + 4, subTop + 3);
+
+        // Subplot separator line
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.strokeRect(padL, subTop, plotW, subH);
+
+        // Spectrum line
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        for (let ch = 0; ch < numChannels; ch++) {
+          const x = padL + (ch / (numChannels - 1)) * plotW;
+          const db = Math.max(dbMin, Math.min(dbMax, b.power_db[ch]));
+          const y = subTop + (1.0 - (db - dbMin) / (dbMax - dbMin)) * subH;
+          if (ch === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      });
+
+      // Frequency ticks at bottom
+      ctx.fillStyle = '#5a7192';
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      const fSteps = [300, 350, 400, 450, 500];
+      fSteps.forEach(freq => {
+        const x = padL + ((freq - fMin) / (fMax - fMin)) * plotW;
+        ctx.fillText(`${freq} MHz`, x, padT + plotH + 4);
+      });
+      return;
+    }
+
+    // Grid lines & dB ticks (Overlay mode)
+    ctx.strokeStyle = '#121d33';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#5a7192';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
 
     const dbSteps = [-40, -30, -20, -10, 0, 10];
     dbSteps.forEach(db => {
       const y = padT + (1.0 - (db - dbMin) / (dbMax - dbMin)) * plotH;
-      specCtx.beginPath();
-      specCtx.moveTo(padL, y);
-      specCtx.lineTo(padL + plotW, y);
-      specCtx.stroke();
-      specCtx.fillText(`${db}`, padL - 6, y);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + plotW, y);
+      ctx.stroke();
+      ctx.fillText(`${db}`, padL - 6, y);
     });
 
     // Frequency grid ticks
-    specCtx.textAlign = 'center';
-    specCtx.textBaseline = 'top';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
     const fSteps = [300, 350, 400, 450, 500];
     fSteps.forEach(freq => {
       const x = padL + ((freq - fMin) / (fMax - fMin)) * plotW;
-      specCtx.beginPath();
-      specCtx.moveTo(x, padT);
-      specCtx.lineTo(x, padT + plotH);
-      specCtx.stroke();
-      specCtx.fillText(`${freq} MHz`, x, padT + plotH + 6);
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, padT + plotH);
+      ctx.stroke();
+      ctx.fillText(`${freq} MHz`, x, padT + plotH + 6);
     });
 
     // Subband boundary marker at 400.65 MHz
     const subbandX = padL + ((400.65 - fMin) / (fMax - fMin)) * plotW;
-    specCtx.strokeStyle = '#00e5ff';
-    specCtx.setLineDash([3, 3]);
-    specCtx.beginPath();
-    specCtx.moveTo(subbandX, padT);
-    specCtx.lineTo(subbandX, padT + plotH);
-    specCtx.stroke();
-    specCtx.setLineDash([]);
+    ctx.strokeStyle = '#00e5ff';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(subbandX, padT);
+    ctx.lineTo(subbandX, padT + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
     // Draw spectrum lines
     activeIds.forEach(id => {
@@ -905,19 +1146,19 @@
       const numChannels = b.power_db.length;
       const color = BEAM_COLORS[parseInt(id, 10) % BEAM_COLORS.length];
 
-      specCtx.strokeStyle = color;
-      specCtx.lineWidth = 1.5;
-      specCtx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
 
       for (let ch = 0; ch < numChannels; ch++) {
         const x = padL + (ch / (numChannels - 1)) * plotW;
         const db = Math.max(dbMin, Math.min(dbMax, b.power_db[ch]));
         const y = padT + (1.0 - (db - dbMin) / (dbMax - dbMin)) * plotH;
 
-        if (ch === 0) specCtx.moveTo(x, y);
-        else specCtx.lineTo(x, y);
+        if (ch === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      specCtx.stroke();
+      ctx.stroke();
     });
 
     // Hover crosshair inspection
@@ -926,13 +1167,13 @@
       const chIdx = Math.min(671, Math.max(0, Math.round(normX * 671)));
       const freqMhz = 300.0 + chIdx * 0.3;
 
-      specCtx.strokeStyle = '#ffffff';
-      specCtx.setLineDash([2, 2]);
-      specCtx.beginPath();
-      specCtx.moveTo(specHover.x, padT);
-      specCtx.lineTo(specHover.x, padT + plotH);
-      specCtx.stroke();
-      specCtx.setLineDash([]);
+      ctx.strokeStyle = '#ffffff';
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(specHover.x, padT);
+      ctx.lineTo(specHover.x, padT + plotH);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
       let readout = `Ch ${chIdx} | ${freqMhz.toFixed(2)} MHz`;
       activeIds.forEach(id => {
@@ -947,26 +1188,27 @@
 
   // --- Canvas: Historical Waterfall ---
   function drawWaterfall() {
-    if (!waterfallCanvas || !waterfallCtx) return;
-    const w = waterfallCanvas.width;
-    const h = waterfallCanvas.height;
+    if (!waterfallCanvas) return;
+    const setup = resizeHiDPICanvas(waterfallCanvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
 
-    waterfallCtx.fillStyle = '#04070d';
-    waterfallCtx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#04070d';
+    ctx.fillRect(0, 0, width, height);
 
     if (waterfallHistory.length === 0) {
-      waterfallCtx.fillStyle = '#5a7192';
-      waterfallCtx.font = '11px ui-monospace, monospace';
-      waterfallCtx.textAlign = 'center';
-      waterfallCtx.textBaseline = 'middle';
-      waterfallCtx.fillText(`Waterfall accumulating historical frames for Beam ${waterfallBeamId}...`, w / 2, h / 2);
+      ctx.fillStyle = '#5a7192';
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`Waterfall accumulating historical frames for Beam ${waterfallBeamId}...`, width / 2, height / 2);
       return;
     }
 
     const numRows = waterfallHistory.length;
     const numChannels = 672;
-    const rowH = h / MAX_WATERFALL_ROWS;
-    const colW = w / numChannels;
+    const rowH = height / MAX_WATERFALL_ROWS;
+    const colW = width / numChannels;
 
     const dbMin = -45.0;
     const dbMax = 15.0;
@@ -980,15 +1222,180 @@
         const norm = (db - dbMin) / (dbMax - dbMin);
         const rgb = viridisColor(norm);
 
-        waterfallCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-        waterfallCtx.fillRect(c * colW, y, Math.ceil(colW) + 0.5, Math.ceil(rowH) + 0.5);
+        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        ctx.fillRect(c * colW, y, Math.ceil(colW) + 0.5, Math.ceil(rowH) + 0.5);
       }
     }
+  }
+
+  function renderWaterfallCanvas(canvas, history) {
+    if (!canvas) return;
+    const setup = resizeHiDPICanvas(canvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
+
+    ctx.fillStyle = '#04070d';
+    ctx.fillRect(0, 0, width, height);
+
+    if (!history || history.length === 0) {
+      ctx.fillStyle = '#5a7192';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Accumulating 672-ch waterfall history...', width / 2, height / 2);
+      return;
+    }
+
+    const numRows = history.length;
+    const numChannels = 672;
+    const rowH = height / MAX_WATERFALL_ROWS;
+    const colW = width / numChannels;
+    const dbMin = -45.0, dbMax = 15.0;
+
+    for (let r = 0; r < numRows; r++) {
+      const powers = history[r].power;
+      const y = r * rowH;
+      for (let c = 0; c < numChannels; c++) {
+        const norm = (powers[c] - dbMin) / (dbMax - dbMin);
+        const rgb = viridisColor(norm);
+        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        ctx.fillRect(c * colW, y, Math.ceil(colW) + 0.5, Math.ceil(rowH) + 0.5);
+      }
+    }
+  }
+
+  function drawMultiWaterfalls() {
+    if (!multiWaterfallStack) return;
+    if (!latestSpectrometer || !latestSpectrometer.beams) {
+      drawWaterfall();
+      return;
+    }
+    const beamIds = Object.keys(latestSpectrometer.beams).sort((a, b) => parseInt(a) - parseInt(b));
+    if (beamIds.length <= 1) {
+      drawWaterfall();
+      const wfMainLabel = document.getElementById('wf-main-label');
+      const wfMainPeak = document.getElementById('wf-main-peak');
+      const targetId = waterfallBeamId !== undefined ? waterfallBeamId : (beamIds[0] || 0);
+      const bObj = latestSpectrometer.beams[targetId];
+      const bName = beamName(targetId);
+      if (wfMainLabel) wfMainLabel.textContent = `Tracker #${targetId}${bName ? ' (' + bName + ')' : ''}`;
+      if (wfMainPeak && bObj && bObj.stats && bObj.stats.max !== undefined) {
+        wfMainPeak.textContent = `${bObj.stats.max.toFixed(1)} dB`;
+      }
+      return;
+    }
+
+    // Hide placeholder main when multiple strips exist
+    const mainStrip = document.getElementById('waterfall-strip-main');
+    if (mainStrip) mainStrip.classList.add('hidden');
+
+    beamIds.forEach(id => {
+      let strip = document.getElementById(`wf-strip-beam-${id}`);
+      if (!strip) {
+        strip = document.createElement('div');
+        strip.className = 'waterfall-strip';
+        strip.id = `wf-strip-beam-${id}`;
+        strip.innerHTML = `
+          <div class="waterfall-strip-header">
+            <span class="wf-strip-label" id="wf-label-${id}">Tracker #${id}</span>
+            <span class="wf-strip-metric monospace" id="wf-peak-${id}">-- dB</span>
+          </div>
+          <div class="canvas-wrap waterfall-canvas-wrap">
+            <canvas id="wf-canvas-${id}" width="600" height="90"></canvas>
+          </div>
+        `;
+        multiWaterfallStack.appendChild(strip);
+      }
+
+      const bName = beamName(id);
+      const bObj = latestSpectrometer.beams[id];
+      const lbl = strip.querySelector(`#wf-label-${id}`);
+      const pk = strip.querySelector(`#wf-peak-${id}`);
+      if (lbl) lbl.textContent = `Tracker #${id}${bName ? ' (' + bName + ')' : ''}`;
+      if (pk && bObj && bObj.stats && bObj.stats.max !== undefined) {
+        pk.textContent = `${bObj.stats.max.toFixed(1)} dB`;
+      }
+
+      const c = strip.querySelector(`#wf-canvas-${id}`);
+      if (c) {
+        renderWaterfallCanvas(c, waterfallHistoriesByBeam[id] || []);
+      }
+    });
   }
 
   // ==========================================================================
   // TAB 2: 16-Beam 2D Sky Grid Camera Logic & Renderers (F4.3)
   // ==========================================================================
+
+  function pushGridSpectra(gridSpectra16xF) {
+    if (!gridSpectra16xF) return;
+    for (let b = 0; b < GRID_BEAMS; b++) {
+      const spec = gridSpectra16xF[b];
+      if (!spec || spec.length === 0) continue;
+      const { canvas, ctx, rowImage } = gridOffscreen[b];
+
+      // Shift existing waterfall down by 1px
+      ctx.drawImage(canvas, 0, 0, FREQ_BINS, HISTORY_LEN - 1, 0, 1, FREQ_BINS, HISTORY_LEN - 1);
+
+      // Write newest frequency slice at y = 0
+      const data = rowImage.data;
+      const specLen = spec.length;
+      for (let f = 0; f < FREQ_BINS; f++) {
+        const srcIdx = Math.floor(f * specLen / FREQ_BINS);
+        const val = spec[srcIdx] !== undefined ? spec[srcIdx] : -40.0;
+        const norm = Math.max(0, Math.min(1, (val - (-40.0)) / 50.0));
+        const [r, g, bl] = viridisColor(norm);
+        const p = f * 4;
+        data[p] = r;
+        data[p + 1] = g;
+        data[p + 2] = bl;
+        data[p + 3] = 255;
+      }
+      ctx.putImageData(rowImage, 0, 0);
+    }
+  }
+
+  function renderGridWaterfalls() {
+    if (!gridWaterfallsMatrix) return;
+
+    if (gridWaterfallsMatrix.children.length !== GRID_BEAMS) {
+      gridWaterfallsMatrix.innerHTML = '';
+      for (let b = 0; b < GRID_BEAMS; b++) {
+        const cell = document.createElement('div');
+        cell.className = 'grid-wf-cell';
+        cell.id = `grid-wf-cell-${b}`;
+        const row = Math.floor(b / 4);
+        const col = b % 4;
+        cell.innerHTML = `
+          <div class="grid-wf-cell-header">
+            <span>Beam ${b} (R${row}C${col})</span>
+            <span class="monospace" id="grid-wf-db-${b}">-- dB</span>
+          </div>
+          <div class="grid-wf-canvas-wrap">
+            <canvas class="grid-wf-canvas" id="grid-wf-canvas-${b}" width="168" height="70"></canvas>
+          </div>
+        `;
+        gridWaterfallsMatrix.appendChild(cell);
+      }
+    }
+
+    for (let b = 0; b < GRID_BEAMS; b++) {
+      const c = document.getElementById(`grid-wf-canvas-${b}`);
+      if (c) {
+        const setup = resizeHiDPICanvas(c);
+        if (setup) {
+          const { ctx, width, height } = setup;
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(gridOffscreen[b].canvas, 0, 0, width, height);
+        }
+      }
+
+      const dbEl = document.getElementById(`grid-wf-db-${b}`);
+      if (dbEl && latestGrid && latestGrid.beam_powers && latestGrid.beam_powers[b] !== undefined) {
+        dbEl.textContent = `${latestGrid.beam_powers[b].toFixed(1)} dB`;
+      }
+    }
+  }
 
   function getSlicedBeamPowers(frame) {
     if (!frame || !frame.beam_power_spectra || frame.beam_power_spectra.length !== 16) {
@@ -1062,19 +1469,20 @@
   }
 
   function drawGridHeatmap() {
-    if (!gridCanvas || !gridCtx) return;
-    const w = gridCanvas.width;
-    const h = gridCanvas.height;
+    if (!gridCanvas) return;
+    const setup = resizeHiDPICanvas(gridCanvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
 
-    gridCtx.fillStyle = '#060a14';
-    gridCtx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#060a14';
+    ctx.fillRect(0, 0, width, height);
 
     if (!latestGrid) {
-      gridCtx.fillStyle = '#5a7192';
-      gridCtx.font = '12px ui-monospace, monospace';
-      gridCtx.textAlign = 'center';
-      gridCtx.textBaseline = 'middle';
-      gridCtx.fillText('Awaiting 16-beam sky grid camera frames (4 Hz)...', w / 2, h / 2);
+      ctx.fillStyle = '#5a7192';
+      ctx.font = '12px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Awaiting 16-beam sky grid camera frames (4 Hz)...', width / 2, height / 2);
       return;
     }
 
@@ -1277,8 +1685,131 @@
 
   function drawCorrelatorMatrices() {
     if (!latestCorrelator) return;
+    drawSplitCorrelatorMatrix();
     drawAmplitudeMatrix();
     drawPhaseMatrix();
+  }
+
+  function drawSplitCorrelatorMatrix() {
+    if (!corrSplitCanvas || !latestCorrelator) return;
+    const setup = resizeHiDPICanvas(corrSplitCanvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
+
+    ctx.fillStyle = '#03060d';
+    ctx.fillRect(0, 0, width, height);
+
+    const cohMatrix = latestCorrelator.coherence_matrix || latestCorrelator.amplitude_matrix;
+    const phaseMatrix = latestCorrelator.phase_matrix;
+    if (!cohMatrix || !phaseMatrix) {
+      ctx.fillStyle = '#5a7192';
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Awaiting 64x64 coherence & phase telemetry...', width / 2, height / 2);
+      return;
+    }
+
+    const pad = 28;
+    const plotW = width - pad * 2;
+    const plotH = height - pad * 2;
+    const cellW = plotW / 64;
+    const cellH = plotH / 64;
+
+    for (let i = 0; i < 64; i++) {
+      for (let j = 0; j < 64; j++) {
+        const x = pad + j * cellW;
+        const y = pad + i * cellH;
+
+        if (i === j) {
+          // Diagonal: Auto-correlation / zeroed baseline
+          ctx.fillStyle = '#111927';
+          ctx.fillRect(x, y, cellW + 0.5, cellH + 0.5);
+        } else if (i < j) {
+          // Upper Triangle: Coherence |Γij| in [0, 1] -> Viridis
+          const coh = Math.max(0, Math.min(1, cohMatrix[i][j]));
+          const rgb = viridisColor(coh);
+          ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+          ctx.fillRect(x, y, cellW + 0.5, cellH + 0.5);
+        } else {
+          // Lower Triangle: Fringe Phase φij in [-pi, pi] -> Cyclic Colormap
+          const rad = phaseMatrix[i][j];
+          const rgb = cyclicPhaseColor(rad);
+          ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+          ctx.fillRect(x, y, cellW + 0.5, cellH + 0.5);
+        }
+      }
+    }
+
+    // Crisp diagonal dividing line
+    ctx.strokeStyle = '#00e5ff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad, pad);
+    ctx.lineTo(pad + plotW, pad + plotH);
+    ctx.stroke();
+
+    // Highlight selected baseline cell
+    if (baselineAntA >= 0 && baselineAntB >= 0) {
+      const minAnt = Math.min(baselineAntA, baselineAntB);
+      const maxAnt = Math.max(baselineAntA, baselineAntB);
+
+      // Upper cell (minAnt, maxAnt)
+      const uX = pad + maxAnt * cellW;
+      const uY = pad + minAnt * cellH;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(uX - 0.5, uY - 0.5, cellW + 1, cellH + 1);
+
+      // Lower cell (maxAnt, minAnt)
+      const lX = pad + minAnt * cellW;
+      const lY = pad + maxAnt * cellH;
+      ctx.strokeRect(lX - 0.5, lY - 0.5, cellW + 1, cellH + 1);
+    }
+
+    // Outer border & Ticks
+    ctx.strokeStyle = '#22324e';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pad, pad, plotW, plotH);
+
+    ctx.fillStyle = '#8fa5c2';
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    const ticks = [0, 8, 16, 24, 32, 40, 48, 56, 63];
+    ticks.forEach(t => {
+      const tx = pad + (t / 63) * plotW;
+      ctx.fillText(`${t}`, tx, pad + plotH + 12);
+    });
+
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ticks.forEach(t => {
+      const ty = pad + (t / 63) * plotH;
+      ctx.fillText(`${t}`, pad - 6, ty);
+    });
+  }
+
+  async function inspectBaseline(antA, antB) {
+    baselineAntA = antA;
+    baselineAntB = antB;
+    if (baseAntAInput) baseAntAInput.value = antA;
+    if (baseAntBInput) baseAntBInput.value = antB;
+
+    try {
+      const res = await fetch(`/api/correlator/baseline/${antA}/${antB}`);
+      if (res.ok) {
+        latestBaselineData = await res.json();
+        if (baselineInspectorTitle) {
+          baselineInspectorTitle.textContent = `Baseline Inspector: Baseline (${antA}, ${antB}) across 672 Channels`;
+        }
+        if (baselineDelayBadge && latestBaselineData.delay_ns !== undefined) {
+          baselineDelayBadge.textContent = `Delay τ: ${latestBaselineData.delay_ns.toFixed(2)} ns`;
+        }
+        requestAnimationFrame(drawFringePlot);
+      }
+    } catch (e) {
+      console.error('Failed to inspect baseline', e);
+    }
   }
 
   function drawAmplitudeMatrix() {
@@ -1474,118 +2005,511 @@
   }
 
   function drawFringePlot() {
-    if (!fringeCanvas || !fringeCtx || !latestCorrelator) return;
-    const w = fringeCanvas.width;
-    const h = fringeCanvas.height;
+    if (!fringeCanvas || !latestCorrelator) return;
+    const setup = resizeHiDPICanvas(fringeCanvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
 
-    fringeCtx.fillStyle = '#05080f';
-    fringeCtx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#05080f';
+    ctx.fillRect(0, 0, width, height);
 
-    const fringes = latestCorrelator.reference_fringes;
-    if (!fringes || !fringes[fringeAntenna]) {
-      fringeCtx.fillStyle = '#5a7192';
-      fringeCtx.font = '11px ui-monospace, monospace';
-      fringeCtx.textAlign = 'center';
-      fringeCtx.fillText(`Awaiting fringe baseline (0, ${fringeAntenna})...`, w / 2, h / 2);
-      return;
+    let ampArr = null;
+    let phaseArr = null;
+    let realArr = null;
+    let imagArr = null;
+    let delayNs = null;
+
+    if (latestBaselineData && latestBaselineData.amplitude && latestBaselineData.phase_rad) {
+      ampArr = latestBaselineData.amplitude;
+      phaseArr = latestBaselineData.phase_rad;
+      delayNs = latestBaselineData.delay_ns;
+      realArr = [];
+      imagArr = [];
+      for (let ch = 0; ch < 672; ch++) {
+        realArr.push(ampArr[ch] * Math.cos(phaseArr[ch]));
+        imagArr.push(ampArr[ch] * Math.sin(phaseArr[ch]));
+      }
+    } else {
+      const fringes = latestCorrelator.reference_fringes;
+      if (!fringes || !fringes[fringeAntenna]) {
+        ctx.fillStyle = '#5a7192';
+        ctx.font = '11px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`Awaiting fringe baseline (0, ${fringeAntenna})...`, width / 2, height / 2);
+        return;
+      }
+      const fringe = fringes[fringeAntenna];
+      ampArr = fringe.amplitude;
+      phaseArr = fringe.phase_rad;
+      realArr = fringe.real;
+      imagArr = fringe.imag;
     }
 
-    const fringe = fringes[fringeAntenna];
     const padL = 46;
     const padR = 16;
     const padT = 14;
     const padB = 26;
-    const plotW = w - padL - padR;
-    const plotH = h - padT - padB;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
 
     // Grid ticks
-    fringeCtx.strokeStyle = '#121d33';
-    fringeCtx.lineWidth = 1;
-    fringeCtx.fillStyle = '#5a7192';
-    fringeCtx.font = '10px ui-monospace, monospace';
+    ctx.strokeStyle = '#121d33';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#5a7192';
+    ctx.font = '10px ui-monospace, monospace';
 
     const fSteps = [300, 350, 400, 450, 500];
     fSteps.forEach(freq => {
       const x = padL + ((freq - 300) / 201.3) * plotW;
-      fringeCtx.beginPath();
-      fringeCtx.moveTo(x, padT);
-      fringeCtx.lineTo(x, padT + plotH);
-      fringeCtx.stroke();
-      fringeCtx.fillText(`${freq} MHz`, x, padT + plotH + 8);
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, padT + plotH);
+      ctx.stroke();
+      ctx.fillText(`${freq} MHz`, x, padT + plotH + 8);
     });
 
     if (fringeMode === 'ri') {
-      // Real (Cyan) & Imag (Amber)
       let maxAbs = 0.01;
       for (let ch = 0; ch < 672; ch++) {
-        if (Math.abs(fringe.real[ch]) > maxAbs) maxAbs = Math.abs(fringe.real[ch]);
-        if (Math.abs(fringe.imag[ch]) > maxAbs) maxAbs = Math.abs(fringe.imag[ch]);
+        if (Math.abs(realArr[ch]) > maxAbs) maxAbs = Math.abs(realArr[ch]);
+        if (Math.abs(imagArr[ch]) > maxAbs) maxAbs = Math.abs(imagArr[ch]);
       }
 
       // Real
-      fringeCtx.strokeStyle = '#00e5ff';
-      fringeCtx.lineWidth = 1.4;
-      fringeCtx.beginPath();
+      ctx.strokeStyle = '#00e5ff';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
       for (let ch = 0; ch < 672; ch++) {
         const x = padL + (ch / 671) * plotW;
-        const y = padT + (0.5 - (fringe.real[ch] / (maxAbs * 2.1))) * plotH;
-        if (ch === 0) fringeCtx.moveTo(x, y);
-        else fringeCtx.lineTo(x, y);
+        const y = padT + (0.5 - (realArr[ch] / (maxAbs * 2.1))) * plotH;
+        if (ch === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      fringeCtx.stroke();
+      ctx.stroke();
 
       // Imag
-      fringeCtx.strokeStyle = '#f59e0b';
-      fringeCtx.beginPath();
+      ctx.strokeStyle = '#f59e0b';
+      ctx.beginPath();
       for (let ch = 0; ch < 672; ch++) {
         const x = padL + (ch / 671) * plotW;
-        const y = padT + (0.5 - (fringe.imag[ch] / (maxAbs * 2.1))) * plotH;
-        if (ch === 0) fringeCtx.moveTo(x, y);
-        else fringeCtx.lineTo(x, y);
+        const y = padT + (0.5 - (imagArr[ch] / (maxAbs * 2.1))) * plotH;
+        if (ch === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      fringeCtx.stroke();
+      ctx.stroke();
     } else if (fringeMode === 'amp') {
-      // Amplitude
       let maxAmp = 0.01;
       for (let ch = 0; ch < 672; ch++) {
-        if (fringe.amplitude[ch] > maxAmp) maxAmp = fringe.amplitude[ch];
+        if (ampArr[ch] > maxAmp) maxAmp = ampArr[ch];
       }
 
-      fringeCtx.strokeStyle = '#10b981';
-      fringeCtx.lineWidth = 1.6;
-      fringeCtx.beginPath();
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
       for (let ch = 0; ch < 672; ch++) {
         const x = padL + (ch / 671) * plotW;
-        const y = padT + (1.0 - (fringe.amplitude[ch] / maxAmp)) * plotH;
-        if (ch === 0) fringeCtx.moveTo(x, y);
-        else fringeCtx.lineTo(x, y);
+        const y = padT + (1.0 - (ampArr[ch] / maxAmp)) * plotH;
+        if (ch === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      fringeCtx.stroke();
+      ctx.stroke();
     } else if (fringeMode === 'phase') {
       // Phase (-pi to +pi)
-      fringeCtx.strokeStyle = '#d500f9';
-      fringeCtx.lineWidth = 1.4;
-      fringeCtx.beginPath();
+      ctx.strokeStyle = '#d500f9';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
       for (let ch = 0; ch < 672; ch++) {
         const x = padL + (ch / 671) * plotW;
-        const y = padT + (1.0 - (fringe.phase_rad[ch] + Math.PI) / (2 * Math.PI)) * plotH;
-        if (ch === 0) fringeCtx.moveTo(x, y);
-        else fringeCtx.lineTo(x, y);
+        const y = padT + (1.0 - (phaseArr[ch] + Math.PI) / (2 * Math.PI)) * plotH;
+        if (ch === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      fringeCtx.stroke();
+      ctx.stroke();
+
+      if (delayNs !== null && delayNs !== undefined) {
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = '10px ui-monospace, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`Fitted Geometric Delay τ = ${delayNs.toFixed(2)} ns  [τ = (1/2π)(dφ/df)]`, padL + plotW, padT + 12);
+      }
     }
   }
 
   // ==========================================================================
-  // TAB 4: 8x8 Physical Array Health & Masking Logic (F4.5)
+  // TAB 4: 8x8 Physical Array Health & Live Line Spectrometer Matrix (F4.5)
   // ==========================================================================
 
+  function drawMasterAntennaSpectrometer() {
+    if (!antMasterCanvas || !antMasterCtx) return;
+    const w = antMasterCanvas.width;
+    const h = antMasterCanvas.height;
+
+    antMasterCtx.fillStyle = '#05080f';
+    antMasterCtx.fillRect(0, 0, w, h);
+
+    const antennas = (latestAntennaMask && latestAntennaMask.antennas && latestAntennaMask.antennas.length === 64)
+      ? latestAntennaMask.antennas
+      : null;
+    const item = antennas ? antennas[selectedAntennaId] : null;
+    const isEnabled = item ? item.enabled : true;
+    const row = Math.floor(selectedAntennaId / 8);
+    const col = selectedAntennaId % 8;
+
+    // Retrieve spectrum data
+    let spectrum = null;
+    if (latestCorrelator && latestCorrelator.full_antenna_spectra_db && latestCorrelator.full_antenna_spectra_db[selectedAntennaId]) {
+      spectrum = latestCorrelator.full_antenna_spectra_db[selectedAntennaId];
+    } else if (item && item.spectrum_db && item.spectrum_db.length > 0) {
+      spectrum = item.spectrum_db;
+    } else if (latestCorrelator && latestCorrelator.antenna_spectra_db && latestCorrelator.antenna_spectra_db[selectedAntennaId]) {
+      spectrum = latestCorrelator.antenna_spectra_db[selectedAntennaId];
+    } else {
+      spectrum = [];
+      for (let i = 0; i < 84; i++) {
+        spectrum.push(12.0 + 3.0 * Math.sin((i / 84) * 3 * Math.PI) + Math.sin(i * 0.4) * 0.5);
+      }
+    }
+
+    const nPoints = spectrum.length;
+    let minDb = 100, maxDb = -100, sumDb = 0, peakIdx = 0;
+    for (let i = 0; i < nPoints; i++) {
+      const v = spectrum[i];
+      if (v > maxDb) { maxDb = v; peakIdx = i; }
+      if (v < minDb) minDb = v;
+      sumDb += v;
+    }
+    const peakFreq = 300.0 + (peakIdx / Math.max(1, nPoints - 1)) * 201.6;
+    const meanDb = nPoints > 0 ? (sumDb / nPoints) : 0;
+
+    // Update Header Text & Readouts
+    if (antMasterTitle) {
+      antMasterTitle.textContent = `Antenna #${String(selectedAntennaId).padStart(2, '0')} Live Line Spectrometer`;
+    }
+    if (antMasterTile) {
+      antMasterTile.textContent = `Physical Tile: Row ${row}, Col ${col}`;
+    }
+    if (antMasterBadge) {
+      antMasterBadge.textContent = isEnabled ? 'NOMINAL (ACTIVE)' : 'MASKED (BLANKED)';
+      antMasterBadge.className = `badge ${isEnabled ? 'badge-success' : 'status-masked-badge'}`;
+    }
+    if (antMasterPeak) {
+      antMasterPeak.textContent = `${maxDb.toFixed(1)} dB @ ${peakFreq.toFixed(1)} MHz`;
+    }
+    if (antMasterMean) {
+      antMasterMean.textContent = `${meanDb.toFixed(1)} dB`;
+    }
+    if (antMasterRms) {
+      antMasterRms.textContent = `${item ? item.power_rms.toFixed(2) : '--'} dB`;
+    }
+    if (antMasterClip) {
+      antMasterClip.textContent = `${item ? (item.clip_fraction * 100).toFixed(2) : '--'}%`;
+    }
+    if (antMasterKurt) {
+      antMasterKurt.textContent = `${item ? item.kurtosis.toFixed(2) : '--'}`;
+    }
+    if (btnToggleSelectedMask) {
+      btnToggleSelectedMask.textContent = isEnabled ? `Mask Antenna #${selectedAntennaId}` : `Unmask Antenna #${selectedAntennaId}`;
+      btnToggleSelectedMask.className = `btn btn-xs ${isEnabled ? 'btn-danger' : 'btn-primary'}`;
+    }
+
+    const padL = 46, padR = 20, padT = 16, padB = 24;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    const yMin = Math.min(0, Math.floor(minDb / 5) * 5);
+    const yMax = Math.max(25, Math.ceil(maxDb / 5) * 5 + 5);
+    const yRange = Math.max(10, yMax - yMin);
+
+    // Horizontal grid lines (dB)
+    antMasterCtx.strokeStyle = '#141d2e';
+    antMasterCtx.lineWidth = 1;
+    antMasterCtx.fillStyle = '#64748b';
+    antMasterCtx.font = '9px ui-monospace, monospace';
+    antMasterCtx.textAlign = 'right';
+    antMasterCtx.textBaseline = 'middle';
+
+    const yStep = yRange > 30 ? 10 : 5;
+    for (let db = Math.ceil(yMin / yStep) * yStep; db <= yMax; db += yStep) {
+      const y = padT + (1.0 - (db - yMin) / yRange) * plotH;
+      antMasterCtx.beginPath();
+      antMasterCtx.moveTo(padL, y);
+      antMasterCtx.lineTo(padL + plotW, y);
+      antMasterCtx.stroke();
+      antMasterCtx.fillText(`${db}`, padL - 6, y);
+    }
+
+    // Vertical frequency grid lines
+    antMasterCtx.textAlign = 'center';
+    antMasterCtx.textBaseline = 'top';
+    const freqs = [300, 350, 400.8, 450, 501.6];
+    freqs.forEach(f => {
+      const x = padL + ((f - 300.0) / 201.6) * plotW;
+      const isSubbandSplit = Math.abs(f - 400.8) < 0.1;
+      antMasterCtx.strokeStyle = isSubbandSplit ? 'rgba(245, 158, 11, 0.45)' : '#141d2e';
+      antMasterCtx.lineWidth = isSubbandSplit ? 1.5 : 1;
+      if (isSubbandSplit) antMasterCtx.setLineDash([4, 4]);
+      else antMasterCtx.setLineDash([]);
+      antMasterCtx.beginPath();
+      antMasterCtx.moveTo(x, padT);
+      antMasterCtx.lineTo(x, padT + plotH);
+      antMasterCtx.stroke();
+      antMasterCtx.setLineDash([]);
+
+      antMasterCtx.fillStyle = isSubbandSplit ? '#fbbf24' : '#64748b';
+      antMasterCtx.fillText(`${f}`, x, padT + plotH + 6);
+    });
+
+    if (!isEnabled) {
+      // Draw flatline & blanked watermark overlay
+      const flatY = padT + plotH - 6;
+      antMasterCtx.strokeStyle = '#6366f1';
+      antMasterCtx.lineWidth = 2;
+      antMasterCtx.beginPath();
+      antMasterCtx.moveTo(padL, flatY);
+      antMasterCtx.lineTo(padL + plotW, flatY);
+      antMasterCtx.stroke();
+
+      antMasterCtx.fillStyle = 'rgba(99, 102, 241, 0.12)';
+      antMasterCtx.fillRect(padL, padT, plotW, plotH);
+      antMasterCtx.fillStyle = '#a5b4fc';
+      antMasterCtx.font = 'bold 12px ui-monospace, monospace';
+      antMasterCtx.textAlign = 'center';
+      antMasterCtx.textBaseline = 'middle';
+      antMasterCtx.fillText('ANTENNA VOLTAGES BLANKED IN VRAM (ZEROED TAPER)', padL + plotW / 2, padT + plotH / 2);
+      return;
+    }
+
+    // Gradient fill area
+    const fillGrad = antMasterCtx.createLinearGradient(0, padT, 0, padT + plotH);
+    fillGrad.addColorStop(0, 'rgba(0, 229, 255, 0.28)');
+    fillGrad.addColorStop(1, 'rgba(0, 229, 255, 0.01)');
+
+    antMasterCtx.beginPath();
+    antMasterCtx.moveTo(padL, padT + plotH);
+    for (let i = 0; i < nPoints; i++) {
+      const x = padL + (i / Math.max(1, nPoints - 1)) * plotW;
+      const y = padT + (1.0 - (spectrum[i] - yMin) / yRange) * plotH;
+      antMasterCtx.lineTo(x, y);
+    }
+    antMasterCtx.lineTo(padL + plotW, padT + plotH);
+    antMasterCtx.closePath();
+    antMasterCtx.fillStyle = fillGrad;
+    antMasterCtx.fill();
+
+    // Line stroke
+    const grad = antMasterCtx.createLinearGradient(padL, 0, padL + plotW, 0);
+    grad.addColorStop(0, '#00e5ff');
+    grad.addColorStop(0.5, '#38bdf8');
+    grad.addColorStop(1, '#818cf8');
+
+    antMasterCtx.beginPath();
+    for (let i = 0; i < nPoints; i++) {
+      const x = padL + (i / Math.max(1, nPoints - 1)) * plotW;
+      const y = padT + (1.0 - (spectrum[i] - yMin) / yRange) * plotH;
+      if (i === 0) antMasterCtx.moveTo(x, y);
+      else antMasterCtx.lineTo(x, y);
+    }
+    antMasterCtx.strokeStyle = grad;
+    antMasterCtx.lineWidth = 1.8;
+    antMasterCtx.stroke();
+
+    // Mark Peak Point
+    const peakX = padL + (peakIdx / Math.max(1, nPoints - 1)) * plotW;
+    const peakY = padT + (1.0 - (maxDb - yMin) / yRange) * plotH;
+
+    antMasterCtx.fillStyle = '#ef4444';
+    antMasterCtx.beginPath();
+    antMasterCtx.arc(peakX, peakY, 4, 0, 2 * Math.PI);
+    antMasterCtx.fill();
+    antMasterCtx.strokeStyle = '#ffffff';
+    antMasterCtx.lineWidth = 1;
+    antMasterCtx.stroke();
+
+    antMasterCtx.fillStyle = '#f87171';
+    antMasterCtx.font = 'bold 9px ui-monospace, monospace';
+    antMasterCtx.textAlign = peakX > padL + plotW - 90 ? 'right' : 'left';
+    antMasterCtx.fillText(`Peak ${maxDb.toFixed(1)} dB`, peakX + (peakX > padL + plotW - 90 ? -8 : 8), peakY - 4);
+
+    // Hover crosshair line
+    if (masterAntennaHoverInfo) {
+      const { x } = masterAntennaHoverInfo;
+      antMasterCtx.strokeStyle = '#00e5ff';
+      antMasterCtx.lineWidth = 1;
+      antMasterCtx.setLineDash([2, 2]);
+      antMasterCtx.beginPath();
+      antMasterCtx.moveTo(x, padT);
+      antMasterCtx.lineTo(x, padT + plotH);
+      antMasterCtx.stroke();
+      antMasterCtx.setLineDash([]);
+    }
+  }
+
+  function drawMiniSpectrometer(canvas, spec, isEnabled, statusRaw) {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+
+    ctx.fillStyle = '#060913';
+    ctx.fillRect(0, 0, w, h);
+
+    // Subband vertical divider line at x = w / 2
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.moveTo(w / 2, 0);
+    ctx.lineTo(w / 2, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (!isEnabled) {
+      ctx.strokeStyle = '#475569';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(0, h - 3);
+      ctx.lineTo(w, h - 3);
+      ctx.stroke();
+      return;
+    }
+
+    if (!spec || spec.length === 0) {
+      spec = [];
+      for (let i = 0; i < 40; i++) {
+        spec.push(10.0 + 3.0 * Math.sin((i / 40) * 2 * Math.PI));
+      }
+    }
+
+    const n = spec.length;
+    let minV = 5, maxV = 25;
+    for (let v of spec) {
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    const range = Math.max(8, maxV - minV);
+
+    let strokeColor = '#00e5ff';
+    if (statusRaw === 'saturated') {
+      strokeColor = '#ef4444';
+    } else if (statusRaw === 'high_clip') {
+      strokeColor = '#f59e0b';
+    }
+
+    // Area fill
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    const fillAlpha = statusRaw === 'saturated' ? 'rgba(239, 68, 68, 0.25)' : statusRaw === 'high_clip' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(0, 229, 255, 0.2)';
+    grad.addColorStop(0, fillAlpha);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * w;
+      const y = h - ((spec[i] - minV) / range) * (h - 6) - 3;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Line stroke
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * w;
+      const y = h - ((spec[i] - minV) / range) * (h - 6) - 3;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+  }
+
+  async function toggleAntennaMask(id, nextState) {
+    try {
+      const res = await fetch('/api/antennas/mask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ antenna_id: id, enabled: nextState })
+      });
+      const reply = await res.json();
+      if (res.ok) {
+        showToast(`Antenna #${id} ${nextState ? 'unmasked (enabled)' : 'masked (blanked)'}`);
+        if (latestAntennaMask && latestAntennaMask.antennas && latestAntennaMask.antennas[id]) {
+          latestAntennaMask.antennas[id].enabled = nextState;
+        }
+        renderArrayGrid();
+        drawMasterAntennaSpectrometer();
+      } else {
+        showToast(reply.detail || 'Failed to toggle antenna', true);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  function renderAntennaMaskGrid(canvas, antennas) {
+    if (!canvas || !antennas) return;
+    const setup = resizeHiDPICanvas(canvas);
+    if (!setup) return;
+    const { ctx, width, height } = setup;
+
+    ctx.clearRect(0, 0, width, height);
+    const cols = 8, rows = 8, gap = 4;
+    const cellW = Math.floor((width - gap * (cols + 1)) / cols);
+    const cellH = Math.floor((height - gap * (rows + 1)) / rows);
+
+    antennas.forEach((ant, idx) => {
+      const r = Math.floor(idx / cols);
+      const c = idx % cols;
+      const x = gap + c * (cellW + gap);
+      const y = gap + r * (cellH + gap);
+
+      const isSelected = (idx === selectedAntennaId);
+      const isMasked = !ant.enabled || ant.status === 'manually_masked' || ant.masked;
+      const powerDb = ant.power_rms !== undefined ? ant.power_rms : (ant.power_db !== undefined ? ant.power_db : 10.0);
+
+      // Background fill based on power/RMS or masked status
+      ctx.fillStyle = isMasked ? '#2a1215' : powerToColor(powerDb);
+      ctx.fillRect(x, y, cellW, cellH);
+
+      // Crisp 1px border (red highlight if masked, cyan highlight if selected)
+      if (isSelected) {
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 0.5, y + 0.5, cellW - 1, cellH - 1);
+      } else {
+        ctx.strokeStyle = isMasked ? '#ff4d4f' : 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = isMasked ? 1.5 : 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, cellW - 1, cellH - 1);
+      }
+
+      // Crisp vector labels
+      ctx.fillStyle = isMasked ? '#ff7875' : '#f0f0f0';
+      ctx.font = '600 11px ui-monospace, SFMono-Regular, monospace';
+      ctx.fillText(`A${String(idx).padStart(2, '0')}`, x + 6, y + 14);
+
+      ctx.fillStyle = isMasked ? '#ff4d4f' : '#a0a0a0';
+      ctx.font = '10px ui-monospace, SFMono-Regular, monospace';
+      ctx.fillText(isMasked ? 'MASKED' : `${powerDb.toFixed(1)} dB`, x + 6, y + cellH - 6);
+    });
+  }
+
   function renderArrayGrid() {
-    if (!arrayGrid8x8) return;
     const antennas = (latestAntennaMask && latestAntennaMask.antennas && latestAntennaMask.antennas.length === 64)
       ? latestAntennaMask.antennas
       : null;
 
+    if (antViewMode === 'canvas') {
+      if (antennaMaskCanvas && antennas) {
+        renderAntennaMaskGrid(antennaMaskCanvas, antennas);
+      }
+      return;
+    }
+
+    if (!arrayGrid8x8) return;
     arrayGrid8x8.innerHTML = '';
 
     for (let id = 0; id < 64; id++) {
@@ -1594,9 +2518,9 @@
       const statusRaw = item ? item.status : 'nominal';
       const powerRms = item ? item.power_rms.toFixed(2) : '8.10';
       const clipPct = item ? (item.clip_fraction * 100).toFixed(2) : '0.01';
-      const kurt = item ? item.kurtosis.toFixed(2) : '3.00';
+      const row = Math.floor(id / 8);
+      const col = id % 8;
 
-      // Status class mapping
       let statusClass = 'status-nominal';
       let tagLabel = 'OK';
 
@@ -1608,20 +2532,39 @@
         tagLabel = 'DEAD';
       } else if (statusRaw === 'saturated') {
         statusClass = 'status-saturated';
-        tagLabel = 'SATURATED';
+        tagLabel = 'SAT';
       } else if (statusRaw === 'high_clip') {
         statusClass = 'status-high-clip';
         tagLabel = 'CLIP';
       }
 
+      // Extract spectrum for mini line spectrometer
+      let spec = (item && item.spectrum_db && item.spectrum_db.length > 0)
+        ? item.spectrum_db
+        : (latestCorrelator && latestCorrelator.antenna_spectra_db && latestCorrelator.antenna_spectra_db[id])
+          ? latestCorrelator.antenna_spectra_db[id]
+          : null;
+
+      let peakDb = '--';
+      if (spec && spec.length > 0 && isEnabled) {
+        let maxV = -999;
+        for (let s of spec) if (s > maxV) maxV = s;
+        peakDb = `${maxV.toFixed(1)} dB`;
+      }
+
       const card = document.createElement('div');
-      card.className = `antenna-card ${statusClass}`;
-      card.title = `Antenna ${id}: Click to toggle enable / mask`;
+      card.className = `antenna-card ${statusClass} ${id === selectedAntennaId ? 'selected' : ''}`;
+      card.title = `Antenna #${id} [Tile ${row},${col}]: Click to inspect line spectrum · Click Tag to toggle mask`;
 
       card.innerHTML = `
         <div class="antenna-card-header">
           <span class="ant-id">#${String(id).padStart(2, '0')}</span>
-          <span class="ant-status-tag">${tagLabel}</span>
+          <span class="ant-power-peak">${peakDb}</span>
+          <span class="ant-status-tag" title="Click to toggle mask">${tagLabel}</span>
+        </div>
+        <div class="ant-mini-spec-wrap">
+          <canvas class="ant-mini-canvas" id="ant-mini-canvas-${id}" width="120" height="38"></canvas>
+          ${!isEnabled ? '<div class="ant-mini-watermark">MASKED</div>' : ''}
         </div>
         <div class="ant-metrics">
           <div class="ant-metric-row">
@@ -1632,38 +2575,33 @@
             <span>Clip:</span>
             <span class="ant-metric-val">${clipPct}%</span>
           </div>
-          <div class="ant-metric-row">
-            <span>Kurt:</span>
-            <span class="ant-metric-val">${kurt}</span>
-          </div>
         </div>
       `;
 
-      card.addEventListener('click', async () => {
-        try {
-          const nextState = !isEnabled;
-          const res = await fetch('/api/antennas/mask', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ antenna_id: id, enabled: nextState })
-          });
-          const reply = await res.json();
-          if (res.ok) {
-            showToast(`Antenna ${id} ${nextState ? 'unmasked (enabled)' : 'masked'}`);
-            // Optimistic update
-            if (item) item.enabled = nextState;
-            renderArrayGrid();
-          } else {
-            showToast(reply.detail || 'Failed to toggle antenna', true);
-          }
-        } catch (err) {
-          showToast(err.message, true);
+      // Render mini line spectrometer
+      const miniCanvas = card.querySelector(`#ant-mini-canvas-${id}`);
+      if (miniCanvas) {
+        drawMiniSpectrometer(miniCanvas, spec, isEnabled, statusRaw);
+      }
+
+      // Click card selects antenna and updates master inspector
+      card.addEventListener('click', (e) => {
+        if (e.target && e.target.classList.contains('ant-status-tag')) {
+          e.stopPropagation();
+          toggleAntennaMask(id, !isEnabled);
+          return;
         }
+
+        selectedAntennaId = id;
+        document.querySelectorAll('.antenna-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        drawMasterAntennaSpectrometer();
       });
 
       arrayGrid8x8.appendChild(card);
     }
   }
+
 
   // ==========================================================================
   // Form Controls & Interaction Handlers
@@ -1951,33 +2889,413 @@
       });
     });
 
+    // Toggle Auto-Detect
+    async function toggleAutoDetect() {
+      const currentState = (latestAntennaMask && latestAntennaMask.auto_detect_enabled !== undefined)
+        ? latestAntennaMask.auto_detect_enabled
+        : true;
+      const targetState = !currentState;
+      try {
+        const res = await fetch('/api/antennas/auto_detect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: targetState })
+        });
+        if (res.ok) {
+          if (latestAntennaMask) {
+            latestAntennaMask.auto_detect_enabled = targetState;
+          }
+          if (rfAutodetectBadge) {
+            rfAutodetectBadge.textContent = targetState ? 'ENABLED' : 'DISABLED';
+            rfAutodetectBadge.className = `metric-val monospace ${targetState ? 'success' : 'warning'}`;
+          }
+          if (btnToggleAutodetect) {
+            btnToggleAutodetect.textContent = targetState ? 'Disable Auto-Detect' : 'Enable Auto-Detect';
+            if (targetState) {
+              btnToggleAutodetect.classList.remove('btn-autodetect-off');
+            } else {
+              btnToggleAutodetect.classList.add('btn-autodetect-off');
+            }
+          }
+          showToast(targetState ? 'Antenna auto-detection enabled' : 'Antenna auto-detection disabled (manual mode)');
+        } else {
+          showToast('Failed to toggle auto-detection', true);
+        }
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    }
+
+    if (btnToggleAutodetect) {
+      btnToggleAutodetect.addEventListener('click', toggleAutoDetect);
+    }
+    if (pillAutodetect) {
+      pillAutodetect.addEventListener('click', toggleAutoDetect);
+    }
+
     // Unmask All Button
     if (btnUnmaskAll) {
       btnUnmaskAll.addEventListener('click', async () => {
-        if (!latestAntennaMask || !latestAntennaMask.antennas) return;
-        const masked = latestAntennaMask.antennas.filter(a => !a.enabled);
-        if (masked.length === 0) {
-          showToast('All antennas are already active');
-          return;
-        }
-
         try {
-          await Promise.all(masked.map(a =>
-            fetch('/api/antennas/mask', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ antenna_id: a.antenna_id, enabled: true })
-            })
-          ));
-          showToast(`Unmasked ${masked.length} antennas`);
-          masked.forEach(a => { a.enabled = true; });
-          renderArrayGrid();
+          const res = await fetch('/api/antennas/unmask_all', { method: 'POST' });
+          if (res.ok) {
+            showToast('All 64 antennas unmasked');
+            if (latestAntennaMask && latestAntennaMask.antennas) {
+              latestAntennaMask.antennas.forEach(a => { a.enabled = true; });
+            }
+            renderArrayGrid();
+            drawMasterAntennaSpectrometer();
+          } else {
+            showToast('Failed to unmask antennas', true);
+          }
         } catch (err) {
           showToast(err.message, true);
         }
       });
     }
+
+    // Mask All Button
+    if (btnMaskAll) {
+      btnMaskAll.addEventListener('click', async () => {
+        if (!latestAntennaMask || !latestAntennaMask.antennas) return;
+        try {
+          await Promise.all(latestAntennaMask.antennas.map(a =>
+            fetch('/api/antennas/mask', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ antenna_id: a.antenna_id, enabled: false })
+            })
+          ));
+          showToast('All 64 antennas masked (blanked)');
+          latestAntennaMask.antennas.forEach(a => { a.enabled = false; });
+          renderArrayGrid();
+          drawMasterAntennaSpectrometer();
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
+    }
+
+    // Invert Mask Button
+    if (btnInvertMask) {
+      btnInvertMask.addEventListener('click', async () => {
+        if (!latestAntennaMask || !latestAntennaMask.antennas) return;
+        try {
+          await Promise.all(latestAntennaMask.antennas.map(a =>
+            fetch('/api/antennas/mask', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ antenna_id: a.antenna_id, enabled: !a.enabled })
+            })
+          ));
+          showToast('Antenna mask pattern inverted');
+          latestAntennaMask.antennas.forEach(a => { a.enabled = !a.enabled; });
+          renderArrayGrid();
+          drawMasterAntennaSpectrometer();
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
+    }
+
+    // Toggle Mask for Selected Antenna Button
+    if (btnToggleSelectedMask) {
+      btnToggleSelectedMask.addEventListener('click', () => {
+        const item = (latestAntennaMask && latestAntennaMask.antennas) ? latestAntennaMask.antennas[selectedAntennaId] : null;
+        const currentEnabled = item ? item.enabled : true;
+        toggleAntennaMask(selectedAntennaId, !currentEnabled);
+      });
+    }
+
+    // Master Antenna Canvas Hover Inspection
+    if (antMasterCanvas && antMasterHover) {
+      antMasterCanvas.addEventListener('mousemove', (e) => {
+        const rect = antMasterCanvas.getBoundingClientRect();
+        const clientX = e.clientX - rect.left;
+        const padL = 46, padR = 20;
+        const scaleX = antMasterCanvas.width / rect.width;
+        const plotW = antMasterCanvas.width - padL - padR;
+        const normX = (clientX * scaleX - padL) / plotW;
+
+        if (normX >= 0 && normX <= 1) {
+          const fMhz = 300.0 + normX * 201.6;
+          const item = (latestAntennaMask && latestAntennaMask.antennas) ? latestAntennaMask.antennas[selectedAntennaId] : null;
+          const spec = (item && item.spectrum_db) || [];
+          const idx = Math.min(spec.length - 1, Math.max(0, Math.round(normX * (spec.length - 1))));
+          const dbVal = spec[idx] !== undefined ? spec[idx] : 0;
+
+          masterAntennaHoverInfo = { x: padL + normX * plotW, fMhz, dbVal };
+          antMasterHover.textContent = `${fMhz.toFixed(2)} MHz | ${dbVal.toFixed(1)} dB`;
+          antMasterHover.style.left = `${Math.min(rect.width - 130, Math.max(10, clientX + 10))}px`;
+          antMasterHover.style.top = '10px';
+          antMasterHover.classList.remove('hidden');
+          drawMasterAntennaSpectrometer();
+        } else {
+          masterAntennaHoverInfo = null;
+          antMasterHover.classList.add('hidden');
+          drawMasterAntennaSpectrometer();
+        }
+      });
+
+      antMasterCanvas.addEventListener('mouseleave', () => {
+        masterAntennaHoverInfo = null;
+        antMasterHover.classList.add('hidden');
+        drawMasterAntennaSpectrometer();
+      });
+    }
+
+    // Steer Drawer Toggles (Zone A)
+    if (btnToggleSteerDrawer && steerDrawer) {
+      btnToggleSteerDrawer.addEventListener('click', () => {
+        steerDrawer.classList.toggle('hidden');
+      });
+    }
+    if (btnCloseSteerDrawer && steerDrawer) {
+      btnCloseSteerDrawer.addEventListener('click', () => {
+        steerDrawer.classList.add('hidden');
+      });
+    }
+
+    // Zone B Mode Buttons (Overlay All, Small-Mult, Sky Radar)
+    if (btnModeOverlay && btnModeSmallMult && btnModeSky) {
+      btnModeOverlay.addEventListener('click', () => {
+        trackerSpecMode = 'overlay';
+        btnModeOverlay.classList.add('active');
+        btnModeSmallMult.classList.remove('active');
+        btnModeSky.classList.remove('active');
+        if (skyCanvas) skyCanvas.classList.add('hidden');
+        if (specCanvas) specCanvas.classList.remove('hidden');
+        requestAnimationFrame(drawSpectrometer);
+      });
+
+      btnModeSmallMult.addEventListener('click', () => {
+        trackerSpecMode = 'small-mult';
+        btnModeSmallMult.classList.add('active');
+        btnModeOverlay.classList.remove('active');
+        btnModeSky.classList.remove('active');
+        if (skyCanvas) skyCanvas.classList.add('hidden');
+        if (specCanvas) specCanvas.classList.remove('hidden');
+        requestAnimationFrame(drawSpectrometer);
+      });
+
+      btnModeSky.addEventListener('click', () => {
+        trackerSpecMode = 'sky';
+        btnModeSky.classList.add('active');
+        btnModeOverlay.classList.remove('active');
+        btnModeSmallMult.classList.remove('active');
+        if (specCanvas) specCanvas.classList.add('hidden');
+        if (skyCanvas) skyCanvas.classList.remove('hidden');
+        requestAnimationFrame(drawSkyMap);
+      });
+    }
+
+    // Grid Camera & Waterfalls View Toggles (Tab 2)
+    if (btnViewCamera && btnViewWaterfalls && gridCameraView && gridWaterfallsPanel) {
+      btnViewCamera.addEventListener('click', () => {
+        gridViewMode = 'camera';
+        btnViewCamera.classList.add('active');
+        btnViewWaterfalls.classList.remove('active');
+        gridCameraView.classList.remove('hidden');
+        gridWaterfallsPanel.classList.add('hidden');
+        requestAnimationFrame(drawGridHeatmap);
+      });
+
+      btnViewWaterfalls.addEventListener('click', () => {
+        gridViewMode = 'waterfalls';
+        btnViewWaterfalls.classList.add('active');
+        btnViewCamera.classList.remove('active');
+        gridCameraView.classList.add('hidden');
+        gridWaterfallsPanel.classList.remove('hidden');
+        requestAnimationFrame(renderGridWaterfalls);
+      });
+    }
+
+    // Correlator View Toggles (Tab 3: Split-Triangle vs Dual Matrices)
+    if (btnCorrViewSplit && btnCorrViewDual && corrSplitCard && corrDualLayout) {
+      btnCorrViewSplit.addEventListener('click', () => {
+        corrViewMode = 'split';
+        btnCorrViewSplit.classList.add('active');
+        btnCorrViewDual.classList.remove('active');
+        corrSplitCard.classList.remove('hidden');
+        corrDualLayout.classList.add('hidden');
+        requestAnimationFrame(drawSplitCorrelatorMatrix);
+      });
+
+      btnCorrViewDual.addEventListener('click', () => {
+        corrViewMode = 'dual';
+        btnCorrViewDual.classList.add('active');
+        btnCorrViewSplit.classList.remove('active');
+        corrSplitCard.classList.add('hidden');
+        corrDualLayout.classList.remove('hidden');
+        requestAnimationFrame(drawCorrelatorMatrices);
+      });
+    }
+
+    // Baseline Inspector Manual Controls (Tab 3)
+    if (btnInspectBaseline && baseAntAInput && baseAntBInput) {
+      btnInspectBaseline.addEventListener('click', () => {
+        const a = parseInt(baseAntAInput.value, 10);
+        const b = parseInt(baseAntBInput.value, 10);
+        if (!isNaN(a) && !isNaN(b) && a >= 0 && a < 64 && b >= 0 && b < 64) {
+          inspectBaseline(a, b);
+          if (corrViewMode === 'split') requestAnimationFrame(drawSplitCorrelatorMatrix);
+        }
+      });
+    }
+
+    // Split Correlator Canvas Interaction (Hover & Click Cell to Inspect)
+    if (corrSplitCanvas) {
+      corrSplitCanvas.addEventListener('mousemove', (e) => {
+        if (!latestCorrelator) return;
+        const rect = corrSplitCanvas.getBoundingClientRect();
+        const clientX = e.clientX - rect.left;
+        const clientY = e.clientY - rect.top;
+        const scale = corrSplitCanvas.width / (window.devicePixelRatio || 1) / rect.width;
+        const curX = clientX * scale;
+        const curY = clientY * scale;
+
+        const pad = 28;
+        const plotW = (rect.width * scale) - pad * 2;
+        const plotH = (rect.height * scale) - pad * 2;
+
+        if (curX >= pad && curX <= pad + plotW && curY >= pad && curY <= pad + plotH) {
+          const j = Math.min(63, Math.max(0, Math.floor((curX - pad) / (plotW / 64))));
+          const i = Math.min(63, Math.max(0, Math.floor((curY - pad) / (plotH / 64))));
+
+          if (corrSplitHoverEl) {
+            if (i === j) {
+              const autoDb = latestCorrelator.auto_db ? latestCorrelator.auto_db[i] : '--';
+              corrSplitHoverEl.textContent = `Antenna #${i} Auto-Power: ${autoDb} dB`;
+            } else if (i < j) {
+              const coh = latestCorrelator.coherence_matrix ? latestCorrelator.coherence_matrix[i][j].toFixed(4) : (latestCorrelator.amplitude_matrix ? latestCorrelator.amplitude_matrix[i][j].toFixed(4) : '--');
+              corrSplitHoverEl.textContent = `Upper Triangle: Baseline (${i}, ${j}) Coherence |Γ| = ${coh} · Click cell to inspect 672-ch baseline`;
+            } else {
+              const ph = latestCorrelator.phase_matrix ? latestCorrelator.phase_matrix[i][j] : 0;
+              const deg = (ph * 180 / Math.PI).toFixed(1);
+              corrSplitHoverEl.textContent = `Lower Triangle: Baseline (${i}, ${j}) Fringe Phase φ = ${ph.toFixed(3)} rad (${deg}°) · Click cell to inspect`;
+            }
+          }
+        }
+      });
+
+      corrSplitCanvas.addEventListener('mouseleave', () => {
+        if (corrSplitHoverEl) {
+          corrSplitHoverEl.textContent = 'Hover on matrix to inspect coherence / phase · Click cell to inspect baseline';
+        }
+      });
+
+      corrSplitCanvas.addEventListener('click', (e) => {
+        if (!latestCorrelator) return;
+        const rect = corrSplitCanvas.getBoundingClientRect();
+        const clientX = e.clientX - rect.left;
+        const clientY = e.clientY - rect.top;
+        const scale = corrSplitCanvas.width / (window.devicePixelRatio || 1) / rect.width;
+        const curX = clientX * scale;
+        const curY = clientY * scale;
+
+        const pad = 28;
+        const plotW = (rect.width * scale) - pad * 2;
+        const plotH = (rect.height * scale) - pad * 2;
+
+        if (curX >= pad && curX <= pad + plotW && curY >= pad && curY <= pad + plotH) {
+          const j = Math.min(63, Math.max(0, Math.floor((curX - pad) / (plotW / 64))));
+          const i = Math.min(63, Math.max(0, Math.floor((curY - pad) / (plotH / 64))));
+          let antA = Math.min(i, j);
+          let antB = Math.max(i, j);
+          if (antA === antB) {
+            antB = (antA + 1) % 64;
+          }
+          inspectBaseline(antA, antB);
+          drawSplitCorrelatorMatrix();
+        }
+      });
+    }
+
+    // Antenna View Mode Buttons (Tab 4: Vector Canvas vs Cards)
+    if (btnAntViewCanvas && btnAntViewCards && antennaMaskCanvasWrap && arrayGrid8x8) {
+      btnAntViewCanvas.addEventListener('click', () => {
+        antViewMode = 'canvas';
+        btnAntViewCanvas.classList.add('active');
+        btnAntViewCards.classList.remove('active');
+        antennaMaskCanvasWrap.classList.remove('hidden');
+        arrayGrid8x8.classList.add('hidden');
+        if (latestAntennaMask && latestAntennaMask.antennas) {
+          renderAntennaMaskGrid(antennaMaskCanvas, latestAntennaMask.antennas);
+        }
+      });
+
+      btnAntViewCards.addEventListener('click', () => {
+        antViewMode = 'cards';
+        btnAntViewCards.classList.add('active');
+        btnAntViewCanvas.classList.remove('active');
+        antennaMaskCanvasWrap.classList.add('hidden');
+        arrayGrid8x8.classList.remove('hidden');
+        renderArrayGrid();
+      });
+    }
+
+    // Antenna Mask Canvas Interaction (Hover & Click to Select)
+    if (antennaMaskCanvas) {
+      antennaMaskCanvas.addEventListener('mousemove', (e) => {
+        if (!latestAntennaMask || !latestAntennaMask.antennas) return;
+        const rect = antennaMaskCanvas.getBoundingClientRect();
+        const clientX = e.clientX - rect.left;
+        const clientY = e.clientY - rect.top;
+        const scaleX = antennaMaskCanvas.width / (window.devicePixelRatio || 1) / rect.width;
+        const scaleY = antennaMaskCanvas.height / (window.devicePixelRatio || 1) / rect.height;
+        const x = clientX * scaleX;
+        const y = clientY * scaleY;
+
+        const cols = 8, rows = 8, gap = 4;
+        const cellW = Math.floor(((rect.width * scaleX) - gap * (cols + 1)) / cols);
+        const cellH = Math.floor(((rect.height * scaleY) - gap * (rows + 1)) / rows);
+
+        const col = Math.floor((x - gap) / (cellW + gap));
+        const row = Math.floor((y - gap) / (cellH + gap));
+
+        if (col >= 0 && col < cols && row >= 0 && row < rows) {
+          const idx = row * cols + col;
+          const ant = latestAntennaMask.antennas[idx];
+          if (ant && antennaMaskHoverEl) {
+            antennaMaskHoverEl.textContent = `Antenna A${String(idx).padStart(2, '0')} [Tile ${row},${col}] | ${ant.enabled ? 'Active' : 'Masked'} | RMS: ${(ant.power_rms || 0).toFixed(2)} dB | Clip: ${((ant.clip_fraction || 0) * 100).toFixed(2)}%`;
+            antennaMaskHoverEl.classList.remove('hidden');
+          }
+        } else if (antennaMaskHoverEl) {
+          antennaMaskHoverEl.classList.add('hidden');
+        }
+      });
+
+      antennaMaskCanvas.addEventListener('mouseleave', () => {
+        if (antennaMaskHoverEl) antennaMaskHoverEl.classList.add('hidden');
+      });
+
+      antennaMaskCanvas.addEventListener('click', (e) => {
+        if (!latestAntennaMask || !latestAntennaMask.antennas) return;
+        const rect = antennaMaskCanvas.getBoundingClientRect();
+        const clientX = e.clientX - rect.left;
+        const clientY = e.clientY - rect.top;
+        const scaleX = antennaMaskCanvas.width / (window.devicePixelRatio || 1) / rect.width;
+        const scaleY = antennaMaskCanvas.height / (window.devicePixelRatio || 1) / rect.height;
+        const x = clientX * scaleX;
+        const y = clientY * scaleY;
+
+        const cols = 8, rows = 8, gap = 4;
+        const cellW = Math.floor(((rect.width * scaleX) - gap * (cols + 1)) / cols);
+        const cellH = Math.floor(((rect.height * scaleY) - gap * (rows + 1)) / rows);
+
+        const col = Math.floor((x - gap) / (cellW + gap));
+        const row = Math.floor((y - gap) / (cellH + gap));
+
+        if (col >= 0 && col < cols && row >= 0 && row < rows) {
+          const idx = row * cols + col;
+          selectedAntennaId = idx;
+          drawMasterAntennaSpectrometer();
+          renderAntennaMaskGrid(antennaMaskCanvas, latestAntennaMask.antennas);
+        }
+      });
+    }
   }
+
 
   // --- Initial Boot Sequence ---
   window.addEventListener('DOMContentLoaded', () => {

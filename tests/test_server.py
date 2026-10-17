@@ -390,3 +390,69 @@ def test_websocket_multiplexing(app_and_poller) -> None:
             t in received_types
             for t in ("spectrometer", "grid", "correlator", "antenna_mask")
         )
+
+
+def test_antenna_spectrum_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/antennas/0/spectrum")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["antenna_id"] == 0
+        assert "frequencies_mhz" in data
+        assert "spectrum_db" in data
+        assert data["num_channels"] > 0
+        assert "peak_freq_mhz" in data
+
+        # Out-of-bounds antenna id returns 422
+        res_invalid = client.get("/api/antennas/64/spectrum")
+        assert res_invalid.status_code == 422
+
+
+def test_unmask_all_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.post("/api/antennas/unmask_all")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "ok"
+
+
+def test_auto_detect_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        # Disable auto-detect
+        res = client.post("/api/antennas/auto_detect", json={"enabled": False})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "ok"
+        assert data["auto_detect_enabled"] is False
+
+        # Re-enable auto-detect
+        res = client.post("/api/antennas/auto_detect", json={"enabled": True})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "ok"
+        assert data["auto_detect_enabled"] is True
+
+
+def test_baseline_spectrum_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/correlator/baseline/0/4")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["antenna_a"] == 0
+        assert data["antenna_b"] == 4
+        assert len(data["frequencies_mhz"]) == 672
+        assert len(data["amplitude"]) == 672
+        assert len(data["phase_rad"]) == 672
+        assert len(data["real"]) == 672
+        assert len(data["imag"]) == 672
+        assert "delay_ns" in data
+
+        # Out of bounds antenna IDs should return 422
+        res_invalid = client.get("/api/correlator/baseline/0/64")
+        assert res_invalid.status_code == 422
+
+

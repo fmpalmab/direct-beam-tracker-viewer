@@ -27,6 +27,7 @@ def parse_args(args: list[str] | None = None) -> Settings:
     parser = argparse.ArgumentParser(description="Direct Beam Tracker Viewer")
     parser.add_argument(
         "--kotekan",
+        "--kotekan-url",
         dest="kotekan_url",
         default=os.environ.get("KOTEKAN_URL", "http://localhost:12048"),
         help="Base URL of kotekan REST server (default: http://localhost:12048)",

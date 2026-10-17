@@ -20,6 +20,7 @@ from viewer.spectrometer import (
     TOTAL_CHANNELS,
     SpectrometerProcessor,
     compute_correlator_diagnostics,
+    compute_correlator_telemetry,
     compute_power_spectrum,
     format_sky_grid_frame,
     identify_celestial_target,
@@ -244,11 +245,14 @@ def test_compute_correlator_diagnostics() -> None:
     assert math.isclose(diag.bandpass_db[0], 0.0, abs_tol=0.1)
     assert math.isclose(diag.bandpass_db[336], 6.02, abs_tol=0.1)
 
-    # 64x64 amplitude and phase matrices
+    # 64x64 amplitude, phase, and normalized coherence matrices
     assert len(diag.amplitude_matrix) == 64
     assert len(diag.amplitude_matrix[0]) == 64
     assert len(diag.phase_matrix) == 64
     assert len(diag.phase_matrix[0]) == 64
+    assert len(diag.coherence_matrix) == 64
+    assert len(diag.coherence_matrix[0]) == 64
+    assert len(diag.auto_db) == 64
 
     # Reference fringes for [0, 4, 6, 8, 32]
     expected_refs = [0, 4, 6, 8, 32]
@@ -262,6 +266,43 @@ def test_compute_correlator_diagnostics() -> None:
         assert len(rf.real) == 672
         assert len(rf.imag) == 672
 
+    # Per-antenna line spectra
+    assert len(diag.antenna_spectra_db) == 64
+    assert len(diag.antenna_spectra_db[0]) == 84
+    assert len(diag.full_antenna_spectra_db) == 64
+    assert len(diag.full_antenna_spectra_db[0]) == 672
+
+
+def test_compute_correlator_telemetry() -> None:
+    # 64x64 visibility matrix with known auto and cross terms
+    rng = np.random.default_rng(777)
+    vis = (rng.normal(0, 1, (64, 64)) + 1j * rng.normal(0, 1, (64, 64))).astype(np.complex64)
+    vis = (vis + vis.conj().T) * 0.5
+    np.fill_diagonal(vis, 100.0)
+
+    res = compute_correlator_telemetry(vis, zero_diag=True)
+    assert "coherence" in res
+    assert "phase" in res
+    assert "auto_db" in res
+
+    coh = np.array(res["coherence"])
+    assert coh.shape == (64, 64)
+    # Diagonal should be 0 when zero_diag=True
+    assert np.allclose(np.diag(coh), 0.0)
+    # Off-diagonal should be bounded in [0, 1]
+    assert np.all(coh >= 0.0)
+    assert np.all(coh <= 1.0 + 1e-4)
+
+    phases = np.array(res["phase"])
+    assert phases.shape == (64, 64)
+    assert np.all(phases >= -np.pi - 1e-3)
+    assert np.all(phases <= np.pi + 1e-3)
+
+    auto_db = np.array(res["auto_db"])
+    assert len(auto_db) == 64
+    # 10 * log10(100) = 20.0 dB
+    assert np.allclose(auto_db, 20.0, atol=0.1)
+
 
 def test_compute_correlator_diagnostics_synthetic_fallback() -> None:
     diag = compute_correlator_diagnostics(vis_cube=None)
@@ -270,6 +311,7 @@ def test_compute_correlator_diagnostics_synthetic_fallback() -> None:
     assert diag.num_elements == 64
     assert len(diag.bandpass_db) == 672
     assert len(diag.amplitude_matrix) == 64
+    assert len(diag.coherence_matrix) == 64
     assert len(diag.reference_fringes) >= 5
 
 

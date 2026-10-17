@@ -74,154 +74,38 @@
     <!-- TAB 1: Direct Astrometric Tracker (Engine 1) (F4.2)                  -->
     <!-- ==================================================================== -->
     <div id="tab-tracker" class="tab-panel active">
-      <div class="panel-layout-tracker">
-        <!-- Left Column: Sky Map, 672-Ch Spectrum, Waterfall -->
-        <div class="tracker-col-visuals">
-          <!-- Sky Map Card -->
-          <div class="panel-card sky-map-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h3>Topocentric Sky Map (l, m)</h3>
-                <span class="badge badge-dim">ENU Polar Horizon</span>
-              </div>
-              <div class="card-actions">
-                <span class="coords-display monospace" id="cursor-coords">l: -- , m: -- | Alt: --° Az: --°</span>
-              </div>
+      <div class="tracker-workspace">
+        <!-- ZONE A: Compact Tracker Control & Seam Table (Full-Width Top Dock) -->
+        <div class="panel-card seam-dock" id="seam-dock">
+          <div class="card-header seam-dock-header">
+            <div class="card-title-group">
+              <h3>Tracked Beams Telemetry & Seam Dock</h3>
+              <span class="badge badge-accent" id="array-lock-badge">Array Lock: NOMINAL</span>
             </div>
-            <div class="canvas-wrap map-canvas-wrap">
-              <canvas id="sky-canvas" width="600" height="600"></canvas>
-            </div>
-            <div class="card-footer">
-              <span class="legend-hint">Radial: 30° / 60° zenith rings · Outer ring: horizon ($r = 1$) · Click row to track trail</span>
-            </div>
-          </div>
-
-          <!-- 4-Beam 672-Channel Spectrum Card -->
-          <div class="panel-card spectrum-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h3>4-Beam 672-Ch Spectrum (300.0 – 501.3 MHz)</h3>
-                <span class="badge badge-accent" id="spec-cadence-badge">4 Hz</span>
-              </div>
-              <div class="card-controls">
-                <div class="control-select-wrap">
-                  <label for="spec-view-select">Beam:</label>
-                  <select id="spec-view-select" class="dropdown-sm">
-                    <option value="all">Overlay All Beams</option>
-                  </select>
-                </div>
-                <button class="btn btn-xs btn-outline" id="spec-reset-zoom-btn">Reset Zoom</button>
-              </div>
-            </div>
-            <div class="spec-readout monospace" id="spec-cursor-readout">
-              Hover cursor on spectrum to inspect frequency & beam power (dB)
-            </div>
-            <div class="canvas-wrap spec-canvas-wrap">
-              <canvas id="spectrometer-canvas" width="600" height="230"></canvas>
-            </div>
-            <div class="card-footer spec-footer-wrap">
-              <div class="spec-legend-pills" id="spec-legend"></div>
-              <div class="spec-stats-bar monospace" id="spec-stats"></div>
-            </div>
-          </div>
-
-          <!-- Historical Waterfall Card -->
-          <div class="panel-card waterfall-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h3>Live Frequency vs Time Waterfall</h3>
-                <span class="badge badge-dim">Rolling 90-step History</span>
-              </div>
-              <div class="card-controls">
-                <div class="control-select-wrap">
-                  <label for="waterfall-beam-select">Beam:</label>
-                  <select id="waterfall-beam-select" class="dropdown-sm">
-                    <option value="0">Beam 0</option>
-                    <option value="1">Beam 1</option>
-                    <option value="2">Beam 2</option>
-                    <option value="3">Beam 3</option>
-                  </select>
-                </div>
-                <button class="btn btn-xs btn-outline" id="waterfall-clear-btn">Clear History</button>
-              </div>
-            </div>
-            <div class="canvas-wrap waterfall-canvas-wrap">
-              <canvas id="waterfall-canvas" width="600" height="180"></canvas>
-            </div>
-            <div class="card-footer waterfall-footer">
-              <div class="colorbar-legend">
-                <span class="cb-label">-45 dB</span>
-                <div class="colorbar-gradient viridis-bar"></div>
-                <span class="cb-label">+15 dB</span>
-              </div>
-              <span class="waterfall-hint">X: 300–501 MHz · Y: Time flow downwards (latest at top)</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right Column: Config, Active Beams Table, Steering Controls -->
-        <div class="tracker-col-controls">
-          <!-- Configuration Card -->
-          <div class="panel-card config-card">
-            <div class="card-header">
-              <h3>Tracker Configuration</h3>
-            </div>
-            <div class="config-grid">
-              <div class="config-cell">
+            <div class="seam-dock-actions">
+              <div class="inline-input-group">
                 <label for="num-beams-select">Active Beams:</label>
-                <div class="inline-input-group">
-                  <input type="number" id="num-beams-select" min="1" max="16" value="4" class="input-sm">
-                  <button class="btn btn-sm btn-outline" id="apply-beams-btn">Apply</button>
-                </div>
+                <input type="number" id="num-beams-select" min="1" max="16" value="4" class="input-sm">
+                <button class="btn btn-xs btn-outline" id="apply-beams-btn">Apply</button>
               </div>
-              <div class="config-cell">
-                <label class="checkbox-label" for="interp-toggle">
-                  <input type="checkbox" id="interp-toggle">
-                  <span>Subframe Phase Interpolation</span>
-                </label>
-              </div>
+              <label class="checkbox-label" for="interp-toggle" title="Enable subframe phase continuous steering">
+                <input type="checkbox" id="interp-toggle">
+                <span>Phase Interpolation</span>
+              </label>
+              <button class="btn btn-xs btn-primary" id="btn-toggle-steer-drawer">+ Steer Target</button>
             </div>
           </div>
 
-          <!-- Active Beams Status Table -->
-          <div class="panel-card beams-table-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h3>Tracked Beams Telemetry</h3>
-                <span class="badge badge-dim">Click row to select</span>
-              </div>
-            </div>
-            <div class="table-responsive">
-              <table class="data-table" id="beam-table">
-                <thead>
-                  <tr>
-                    <th>Beam</th>
-                    <th>Target / Routine</th>
-                    <th>(l0, m0)</th>
-                    <th>(RA, Dec)</th>
-                    <th>(Alt, Az)</th>
-                    <th>Peak dB</th>
-                  </tr>
-                </thead>
-                <tbody id="beam-table-body">
-                  <tr><td colspan="6" class="empty-state">Connecting to beam tracker...</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Steering Controls Card -->
-          <div class="panel-card steer-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h3>Target Steering Controls</h3>
-              </div>
+          <!-- Collapsible Inline Steering Drawer -->
+          <div class="steer-drawer hidden" id="steer-drawer">
+            <div class="steer-drawer-header">
+              <span class="steer-drawer-title">Beam Steering Control</span>
               <div class="sub-tab-buttons">
-                <button class="sub-tab-btn active" data-subtab="subtab-lm" id="tab-btn-lm">Direction Cosines</button>
+                <button class="sub-tab-btn active" data-subtab="subtab-lm" id="tab-btn-lm">Direction Cosines (l, m)</button>
                 <button class="sub-tab-btn" data-subtab="subtab-celestial" id="tab-btn-celestial">Celestial (RA/Dec)</button>
               </div>
+              <button class="btn btn-xs btn-outline" id="btn-close-steer-drawer">✕ Close</button>
             </div>
-
             <!-- Direction Cosines Form -->
             <form id="form-steer-lm" class="steer-subtab-content active">
               <div class="form-row">
@@ -239,6 +123,7 @@
                   <label for="lm-m0">m0 (North):</label>
                   <input type="number" id="lm-m0" step="any" placeholder="0.0000" class="input-sm" required>
                 </div>
+                <button type="submit" class="btn btn-primary btn-xs" id="btn-submit-lm">Send Target (l, m)</button>
               </div>
               <details class="adv-trajectory">
                 <summary>Linear Trajectory (Optional l1, m1, dl, dm)</summary>
@@ -261,9 +146,6 @@
                   </div>
                 </div>
               </details>
-              <div class="form-actions">
-                <button type="submit" class="btn btn-primary btn-sm" id="btn-submit-lm">Send Target (l, m)</button>
-              </div>
             </form>
 
             <!-- Celestial (RA/Dec) Form -->
@@ -288,21 +170,124 @@
                     <option value="sun">Sun Reference (0.00°, 0.00°)</option>
                   </select>
                 </div>
-              </div>
-              <div class="form-row">
                 <div class="form-group">
-                  <label for="cel-ra">Right Ascension (deg, 0..360):</label>
+                  <label for="cel-ra">RA (deg):</label>
                   <input type="number" id="cel-ra" min="0" max="359.9999" step="any" placeholder="e.g. 83.633" class="input-sm" required>
                 </div>
                 <div class="form-group">
-                  <label for="cel-dec">Declination (deg, -90..90):</label>
+                  <label for="cel-dec">Dec (deg):</label>
                   <input type="number" id="cel-dec" min="-90" max="90" step="any" placeholder="e.g. 22.014" class="input-sm" required>
                 </div>
-              </div>
-              <div class="form-actions">
-                <button type="submit" class="btn btn-primary btn-sm" id="btn-submit-cel">Point Celestial Target</button>
+                <button type="submit" class="btn btn-primary btn-xs" id="btn-submit-cel">Point Target</button>
               </div>
             </form>
+          </div>
+
+          <!-- Dense Seam & Beam Telemetry Table -->
+          <div class="table-responsive seam-table-wrap">
+            <table class="data-table seam-table" id="beam-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Target / Alias</th>
+                  <th>RA / Dec</th>
+                  <th>Az / El</th>
+                  <th>(l0, m0)</th>
+                  <th>Seam / Phase Rate</th>
+                  <th>Peak dB</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="beam-table-body">
+                <tr><td colspan="9" class="empty-state">Connecting to beam tracker...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ZONE B: 1D Bandpass Inspector (Left 40% - Fixed Aspect) -->
+        <div class="panel-card line-spec-panel" id="line-spec-panel">
+          <div class="card-header">
+            <div class="card-title-group">
+              <h3>1D Bandpass Inspector</h3>
+              <span class="badge badge-accent" id="spec-cadence-badge">4 Hz</span>
+            </div>
+            <div class="card-controls">
+              <div class="btn-group" id="line-spec-mode-group">
+                <button class="btn btn-xs btn-outline active" id="btn-mode-overlay" title="Overlay all active beams">Overlay All</button>
+                <button class="btn btn-xs btn-outline" id="btn-mode-small-mult" title="Split into small-multiples sparklines">Small-Mult</button>
+                <button class="btn btn-xs btn-outline" id="btn-mode-sky" title="Toggle Topocentric Sky Map">Sky Radar</button>
+              </div>
+              <div class="control-select-wrap">
+                <label for="spec-view-select">Beam:</label>
+                <select id="spec-view-select" class="dropdown-sm">
+                  <option value="all">Overlay All</option>
+                </select>
+              </div>
+              <button class="btn btn-xs btn-outline" id="spec-reset-zoom-btn">Reset</button>
+            </div>
+          </div>
+          <div class="spec-readout monospace" id="spec-cursor-readout">
+            Hover cursor on spectrum to inspect frequency & beam power (dB)
+          </div>
+          <div class="canvas-wrap spec-canvas-wrap" id="spec-canvas-container">
+            <canvas id="spectrometer-canvas" width="600" height="230"></canvas>
+            <canvas id="sky-canvas" class="hidden" width="600" height="230"></canvas>
+          </div>
+          <div class="card-footer spec-footer-wrap">
+            <div class="spec-legend-pills" id="spec-legend"></div>
+            <div class="spec-stats-bar monospace" id="spec-stats"></div>
+          </div>
+        </div>
+
+        <!-- ZONE C: Synchronized Multi-Waterfall Stack (Right 60% - Shared 672-Ch Frequency Axis) -->
+        <div class="panel-card waterfalls-panel" id="waterfalls-panel">
+          <div class="card-header">
+            <div class="card-title-group">
+              <h3>Synchronized Multi-Waterfall Stack</h3>
+              <span class="badge badge-dim">Shared 672-Ch Axis · 90-step History</span>
+            </div>
+            <div class="card-controls">
+              <div class="control-select-wrap">
+                <label for="waterfall-beam-select">Focus:</label>
+                <select id="waterfall-beam-select" class="dropdown-sm">
+                  <option value="0">Beam 0</option>
+                  <option value="1">Beam 1</option>
+                  <option value="2">Beam 2</option>
+                  <option value="3">Beam 3</option>
+                </select>
+              </div>
+              <button class="btn btn-xs btn-outline" id="waterfall-clear-btn">Clear</button>
+            </div>
+          </div>
+          <div class="waterfalls-stack-scroll" id="waterfalls-stack-scroll">
+            <div id="multi-waterfall-stack" class="multi-waterfall-stack">
+              <div class="waterfall-strip" id="waterfall-strip-main">
+                <div class="waterfall-strip-header">
+                  <span class="wf-strip-label" id="wf-main-label">Tracker #0 (Active)</span>
+                  <span class="wf-strip-metric monospace" id="wf-main-peak">-- dB</span>
+                </div>
+                <div class="canvas-wrap waterfall-canvas-wrap">
+                  <canvas id="waterfall-canvas" width="600" height="150"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- Shared Common 672-Channel Frequency Axis at the Bottom -->
+          <div class="shared-freq-axis-wrap">
+            <div class="shared-freq-ticks">
+              <span>0 (300.0 MHz)</span>
+              <span>168 (350.4 MHz)</span>
+              <span class="split-tick">336 (400.8 MHz Boundary)</span>
+              <span>504 (451.2 MHz)</span>
+              <span>671 (501.3 MHz)</span>
+            </div>
+            <div class="colorbar-legend">
+              <span class="cb-label">-45 dB</span>
+              <div class="colorbar-gradient viridis-bar"></div>
+              <span class="cb-label">+15 dB</span>
+            </div>
           </div>
         </div>
       </div>
@@ -329,6 +314,13 @@
             <button class="btn btn-xs btn-outline" data-mode="cells" id="btn-mode-cells">Crisp Grid Cells</button>
           </div>
         </div>
+        <div class="toolbar-section">
+          <span class="toolbar-label">View:</span>
+          <div class="btn-group" id="grid-view-buttons">
+            <button class="btn btn-xs btn-outline active" data-view="camera" id="btn-view-camera">Camera & Table</button>
+            <button class="btn btn-xs btn-outline" data-view="waterfalls" id="btn-view-waterfalls">16-Beam Waterfalls</button>
+          </div>
+        </div>
         <div class="toolbar-section telemetry-pills">
           <div class="pill-metric" title="Power-weighted Centroid Coordinate">
             <span class="metric-name">Centroid (l̄, m̄):</span>
@@ -345,7 +337,7 @@
         </div>
       </div>
 
-      <div class="panel-layout-grid">
+      <div class="panel-layout-grid" id="grid-camera-view">
         <!-- Left: 4x4 Spatial Cosine Heatmap Canvas -->
         <div class="panel-card grid-canvas-card">
           <div class="card-header">
@@ -395,6 +387,24 @@
           </div>
         </div>
       </div>
+
+      <!-- 16-Beam Multi-Waterfall Grid Panel (Decoupled Offscreen Rings) -->
+      <div class="panel-card grid-waterfalls-card hidden" id="grid-waterfalls-panel">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>16-Beam Sky Grid Continuous Spectrogram Waterfalls</h3>
+            <span class="badge badge-accent">16 Persistent Offscreen Buffers · 168 Bins</span>
+          </div>
+          <div class="colorbar-legend">
+            <span class="cb-label">-40 dB</span>
+            <div class="colorbar-gradient viridis-bar"></div>
+            <span class="cb-label">+10 dB</span>
+          </div>
+        </div>
+        <div class="grid-waterfalls-matrix" id="grid-waterfalls-matrix">
+          <!-- 16 beam waterfall canvases generated dynamically by app.js -->
+        </div>
+      </div>
     </div>
 
     <!-- ==================================================================== -->
@@ -410,12 +420,47 @@
           <span class="badge badge-accent" id="corr-cadence-badge">1.0 s Cadence</span>
         </div>
         <div class="toolbar-section">
-          <span class="fringe-status-tag">Reference Baselines: Ant 0 vs [0, 4, 6, 8, 32]</span>
+          <span class="toolbar-label">Matrix View:</span>
+          <div class="btn-group" id="corr-view-buttons">
+            <button class="btn btn-xs btn-outline active" data-view="split" id="btn-corr-view-split">Split-Triangle (Coherence / Phase)</button>
+            <button class="btn btn-xs btn-outline" data-view="dual" id="btn-corr-view-dual">Dual 64x64 Matrices</button>
+          </div>
+        </div>
+        <div class="toolbar-section">
+          <span class="fringe-status-tag">Click any cell (i, j) to plot 672-ch Baseline Inspector</span>
         </div>
       </div>
 
-      <div class="correlator-grid-layout">
-        <!-- Top Row Left: 64x64 Correlation Amplitude Matrix -->
+      <!-- Split-Triangle Main View (Default) -->
+      <div class="panel-card matrix-card corr-split-card" id="corr-split-card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>64x64 Normalized Coherence & Fringe Phase Matrix</h3>
+            <span class="badge badge-accent">Upper: Coherence |Γij| · Lower: Phase φij</span>
+          </div>
+          <span class="coords-display monospace" id="corr-split-hover">Hover on matrix to inspect coherence / phase · Click cell to inspect baseline</span>
+        </div>
+        <div class="canvas-wrap matrix-canvas-wrap split-canvas-wrap">
+          <canvas id="corr-split-canvas" width="560" height="560"></canvas>
+        </div>
+        <div class="card-footer matrix-footer split-footer">
+          <div class="colorbar-legend">
+            <span class="cb-label">0.0 (Dead/Blank)</span>
+            <div class="colorbar-gradient viridis-bar"></div>
+            <span class="cb-label">1.0 Coherence |Γij|</span>
+          </div>
+          <div class="colorbar-legend">
+            <span class="cb-label">-π (-180°)</span>
+            <div class="colorbar-gradient phase-bar"></div>
+            <span class="cb-label">+π (+180°) Phase φij</span>
+          </div>
+          <span class="matrix-hint">Click pixel (i, j) to verify linear geometric phase slope τ = (1/2π)(dφ/df) below</span>
+        </div>
+      </div>
+
+      <!-- Dual Matrix View (Optional Toggle) -->
+      <div class="correlator-grid-layout hidden" id="corr-dual-layout">
+        <!-- Amplitude Matrix -->
         <div class="panel-card matrix-card">
           <div class="card-header">
             <div class="card-title-group">
@@ -436,7 +481,7 @@
           </div>
         </div>
 
-        <!-- Top Row Right: 64x64 Correlation Phase Matrix -->
+        <!-- Phase Matrix -->
         <div class="panel-card matrix-card">
           <div class="card-header">
             <div class="card-title-group">
@@ -456,8 +501,10 @@
             <span class="matrix-hint">Cyclic phase colormap: Anti-symmetric across diagonal</span>
           </div>
         </div>
+      </div>
 
-        <!-- Bottom Row Left: 672-Ch Autocorrelation Bandpass -->
+      <div class="correlator-bottom-layout">
+        <!-- 672-Ch Autocorrelation Bandpass -->
         <div class="panel-card bandpass-card">
           <div class="card-header">
             <div class="card-title-group">
@@ -467,48 +514,54 @@
             <span class="coords-display monospace" id="corr-bandpass-hover">Freq: -- MHz | Power: -- dB</span>
           </div>
           <div class="canvas-wrap bandpass-canvas-wrap">
-            <canvas id="corr-bandpass-canvas" width="560" height="230"></canvas>
+            <canvas id="corr-bandpass-canvas" width="560" height="200"></canvas>
           </div>
           <div class="card-footer">
             <span class="legend-hint">Dashed line marks Subband 0 (300.0 MHz) & Subband 1 (400.8 MHz) interface</span>
           </div>
         </div>
 
-        <!-- Bottom Row Right: Reference Baseline Fringe Plotter -->
-        <div class="panel-card fringe-card">
+        <!-- Baseline Inspector (Click Cell i, j) -->
+        <div class="panel-card fringe-card baseline-inspector-card" id="baseline-inspector-card">
           <div class="card-header">
             <div class="card-title-group">
-              <h3>Baseline Fringe Plotter</h3>
+              <h3 id="baseline-inspector-title">Baseline Inspector: Baseline (0, 4) across 672 Channels</h3>
+              <span class="badge badge-accent" id="baseline-delay-badge">Delay τ: -- ns</span>
             </div>
             <div class="fringe-selectors">
-              <!-- Baseline Buttons -->
+              <div class="inline-input-group baseline-picker">
+                <label>Ant A:</label>
+                <input type="number" id="base-ant-a" min="0" max="63" value="0" class="input-xs">
+                <label>Ant B:</label>
+                <input type="number" id="base-ant-b" min="0" max="63" value="4" class="input-xs">
+                <button class="btn btn-xs btn-outline" id="btn-inspect-baseline">Plot</button>
+              </div>
               <div class="btn-group" id="fringe-baseline-buttons">
-                <button class="btn btn-xs btn-outline" data-ant="0">0–0 (Auto)</button>
+                <button class="btn btn-xs btn-outline" data-ant="0">0–0</button>
                 <button class="btn btn-xs btn-outline active" data-ant="4">0–4</button>
                 <button class="btn btn-xs btn-outline" data-ant="6">0–6</button>
                 <button class="btn btn-xs btn-outline" data-ant="8">0–8</button>
                 <button class="btn btn-xs btn-outline" data-ant="32">0–32</button>
               </div>
-              <!-- Plot Mode Buttons -->
               <div class="btn-group" id="fringe-mode-buttons">
                 <button class="btn btn-xs btn-outline active" data-mode="ri">Real & Imag</button>
                 <button class="btn btn-xs btn-outline" data-mode="amp">Amplitude</button>
-                <button class="btn btn-xs btn-outline" data-mode="phase">Phase</button>
+                <button class="btn btn-xs btn-outline" data-mode="phase">Phase Slope (Delay)</button>
               </div>
             </div>
           </div>
           <div class="spec-readout monospace" id="fringe-hover">
-            Hover cursor on fringe to inspect channel frequency and oscillation amplitude
+            Hover cursor on fringe to inspect channel frequency, amplitude and phase
           </div>
           <div class="canvas-wrap fringe-canvas-wrap">
-            <canvas id="fringe-canvas" width="560" height="230"></canvas>
+            <canvas id="fringe-canvas" width="560" height="200"></canvas>
           </div>
           <div class="card-footer fringe-footer">
             <div class="fringe-legend">
               <span class="legend-pill"><span class="dot cyan"></span> Real(Vij)</span>
               <span class="legend-pill"><span class="dot amber"></span> Imag(Vij)</span>
             </div>
-            <span class="legend-hint">Interferometric spatial fringes across 672 frequency channels</span>
+            <span class="legend-hint">Linear phase wrap across 672 channels verifies geometric/instrumental delay τ = (1 / 2π)(dφ/df)</span>
           </div>
         </div>
       </div>
@@ -521,7 +574,7 @@
       <!-- Array Header Bar -->
       <div class="array-toolbar">
         <div class="toolbar-section">
-          <span class="toolbar-title">Physical 8x8 Antenna Aperture (64 Elements)</span>
+          <span class="toolbar-title">Physical 8x8 Antenna Aperture & Line Spectrometer</span>
           <div class="pill-metric">
             <span class="metric-name">Active Antennas:</span>
             <span class="metric-val monospace success" id="rf-active-badge">64 / 64</span>
@@ -530,7 +583,7 @@
             <span class="metric-name">Masked Antennas:</span>
             <span class="metric-val monospace highlight" id="rf-masked-badge">0 / 64</span>
           </div>
-          <div class="pill-metric">
+          <div class="pill-metric pill-clickable" id="pill-autodetect" title="Click to toggle real-time RF auto-detection">
             <span class="metric-name">Auto-Detect:</span>
             <span class="metric-val monospace success" id="rf-autodetect-badge">ENABLED</span>
           </div>
@@ -540,14 +593,78 @@
           </div>
         </div>
         <div class="toolbar-section array-actions">
-          <span class="array-hint">Click antenna card to toggle enable/mask state</span>
-          <button class="btn btn-xs btn-outline" id="btn-unmask-all">Unmask All Antennas</button>
+          <span class="array-hint">Click cell to select line spectrum · Click Tag / Button to toggle mask</span>
+          <button class="btn btn-xs btn-outline" id="btn-toggle-autodetect" title="Toggle real-time RF auto-detection (Kurtosis, Saturation, Clip, MAD outlier)">Disable Auto-Detect</button>
+          <button class="btn btn-xs btn-outline" id="btn-unmask-all">Unmask All</button>
+          <button class="btn btn-xs btn-outline" id="btn-mask-all">Mask All</button>
+          <button class="btn btn-xs btn-outline" id="btn-invert-mask">Invert</button>
         </div>
       </div>
 
-      <!-- 8x8 Physical Grid of 64 Antenna Cards -->
+      <!-- Selected Antenna Master Line Spectrometer (672-Ch Zoom View) -->
+      <div class="panel-card ant-master-card" id="ant-master-card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3 id="ant-master-title">Antenna #00 Line Spectrometer</h3>
+            <span class="badge" id="ant-master-badge">NOMINAL (ENABLED)</span>
+            <span class="badge badge-dim" id="ant-master-tile">Physical Tile: Row 0, Col 0</span>
+          </div>
+          <div class="ant-master-controls">
+            <div class="ant-master-metrics">
+              <span class="metric-item">Peak: <strong id="ant-master-peak">-- dB @ -- MHz</strong></span>
+              <span class="metric-item">Mean: <strong id="ant-master-mean">-- dB</strong></span>
+              <span class="metric-item">RMS: <strong id="ant-master-rms">-- dB</strong></span>
+              <span class="metric-item">Clip: <strong id="ant-master-clip">--%</strong></span>
+              <span class="metric-item">Kurt: <strong id="ant-master-kurt">--</strong></span>
+            </div>
+            <button class="btn btn-xs btn-primary" id="btn-toggle-selected-mask">Mask Antenna #00</button>
+          </div>
+        </div>
+        <div class="ant-master-body">
+          <div class="canvas-wrap ant-master-canvas-wrap">
+            <canvas id="ant-master-canvas" width="940" height="150"></canvas>
+            <div class="canvas-hover-readout hidden" id="ant-master-hover"></div>
+          </div>
+          <div class="ant-master-footer">
+            <div class="ant-master-scale">
+              <span>300.0 MHz (Subband 0, Ch 0)</span>
+              <span class="subband-divider-label">400.8 MHz (Subband Boundary)</span>
+              <span>501.6 MHz (Subband 1, Ch 671)</span>
+            </div>
+            <div class="ant-master-legend">
+              <span><span class="legend-dot cyan"></span> Active Line Spectrum</span>
+              <span><span class="legend-dot red"></span> Peak Detection</span>
+              <span><span class="legend-dot amber"></span> 400.8 MHz Split</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 8x8 Physical Grid of 64 Antenna Elements with HiDPI Canvas & Cards Option -->
       <div class="panel-card array-grid-card">
-        <div class="array-grid-8x8" id="array-grid-8x8">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>64-Antenna Aperture Masking Matrix (8×8 Vector Elements)</h3>
+            <span class="badge badge-dim">64 Aperture Elements · 300.0–501.6 MHz</span>
+          </div>
+          <div class="btn-group" id="ant-view-mode-buttons">
+            <button class="btn btn-xs btn-outline active" id="btn-ant-view-canvas">8x8 Vector Canvas (HiDPI)</button>
+            <button class="btn btn-xs btn-outline" id="btn-ant-view-cards">64 Mini Spectrometers</button>
+          </div>
+          <div class="array-matrix-legend">
+            <span class="badge badge-xs status-nominal-badge">● Nominal</span>
+            <span class="badge badge-xs status-clip-badge">● Clipping</span>
+            <span class="badge badge-xs status-sat-badge">● Saturated</span>
+            <span class="badge badge-xs status-masked-badge">● Masked / Blanked</span>
+          </div>
+        </div>
+        <!-- HiDPI Vector Canvas Matrix View (Default) -->
+        <div class="antenna-mask-canvas-wrap" id="antenna-mask-canvas-wrap">
+          <canvas id="antenna-mask-canvas" width="940" height="480"></canvas>
+          <div class="canvas-hover-readout hidden" id="antenna-mask-hover"></div>
+        </div>
+        <!-- 64 Individual Cards View -->
+        <div class="array-grid-8x8 hidden" id="array-grid-8x8">
           <!-- 64 antenna cards generated dynamically by app.js -->
         </div>
       </div>

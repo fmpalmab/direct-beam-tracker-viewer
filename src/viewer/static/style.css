@@ -787,6 +787,32 @@ body {
   color: var(--accent-green);
 }
 
+.metric-val.warning {
+  color: var(--accent-gold);
+}
+
+.pill-metric.pill-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.pill-metric.pill-clickable:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+  border-color: var(--accent-cyan);
+}
+
+.btn-autodetect-off {
+  background: rgba(255, 171, 0, 0.12) !important;
+  border-color: rgba(255, 171, 0, 0.45) !important;
+  color: var(--accent-gold) !important;
+}
+
+.btn-autodetect-off:hover {
+  background: rgba(255, 171, 0, 0.22) !important;
+  border-color: var(--accent-gold) !important;
+}
+
 .panel-layout-grid {
   display: grid;
   grid-template-columns: 560px 1fr;
@@ -1038,6 +1064,170 @@ body {
   font-weight: 600;
 }
 
+/* Master Line Spectrometer Panel */
+.ant-master-card {
+  margin-bottom: 14px;
+}
+
+.ant-master-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ant-master-metrics {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ant-master-metrics .metric-item strong {
+  color: var(--accent-cyan);
+}
+
+.ant-master-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 150px;
+  background: #05080f;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+#ant-master-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.ant-master-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 6px 4px 0 4px;
+}
+
+.ant-master-scale {
+  display: flex;
+  gap: 24px;
+}
+
+.subband-divider-label {
+  color: var(--accent-amber);
+}
+
+.ant-master-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.legend-dot.cyan {
+  background-color: var(--accent-cyan);
+  box-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
+}
+
+.legend-dot.red {
+  background-color: var(--accent-red);
+}
+
+.legend-dot.amber {
+  background-color: var(--accent-amber);
+}
+
+/* 8x8 Matrix Card & Mini Canvas */
+.array-matrix-legend {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.status-nominal-badge {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.status-clip-badge {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.status-sat-badge {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.status-masked-badge {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.antenna-card.selected {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 14px rgba(0, 229, 255, 0.35);
+  transform: translateY(-2px);
+}
+
+.antenna-card-header .ant-power-peak {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.ant-mini-spec-wrap {
+  position: relative;
+  width: 100%;
+  height: 38px;
+  background: #060913;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  margin: 2px 0;
+}
+
+.ant-mini-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.ant-mini-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: rgba(165, 180, 252, 0.7);
+  background: rgba(13, 18, 33, 0.65);
+  pointer-events: none;
+}
+
+
 /* ========================================================================== */
 /* Toast Notification Popup                                                  */
 /* ========================================================================== */
@@ -1074,3 +1264,286 @@ body {
   transform: translateY(12px);
   pointer-events: none;
 }
+
+/* ========================================================================== */
+/* Direct Beam Tracker Multi-Zone Layout (F4.2 / Bottleneck 4)               */
+/* ========================================================================== */
+.tracker-workspace {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: 2fr 3fr;
+  grid-template-areas:
+    "seam-dock seam-dock"
+    "line-spec waterfalls";
+  gap: 12px;
+  height: calc(100vh - 64px); /* Lock to viewport height — no runaway left column */
+  overflow: hidden;
+}
+
+.seam-dock {
+  grid-area: seam-dock;
+  max-height: 210px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.seam-dock-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+
+.seam-dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.seam-table-wrap {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.seam-table th, .seam-table td {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.steer-drawer {
+  background: var(--bg-surface, #0d1221);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.steer-drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.steer-drawer-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-cyan);
+}
+
+.line-spec-panel {
+  grid-area: line-spec;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.line-spec-panel .spec-canvas-wrap {
+  flex: 1;
+  min-height: 200px;
+  position: relative;
+}
+
+.waterfalls-panel {
+  grid-area: waterfalls;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.waterfalls-stack-scroll {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.multi-waterfall-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.waterfall-strip {
+  background: #050811;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+}
+
+.waterfall-strip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.wf-strip-label {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.wf-strip-metric {
+  color: var(--text-dim, #94a3b8);
+}
+
+.waterfall-strip .waterfall-canvas-wrap {
+  width: 100%;
+  height: 90px;
+}
+
+.shared-freq-axis-wrap {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.4);
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.shared-freq-ticks {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+}
+
+.shared-freq-ticks .split-tick {
+  color: var(--accent-amber);
+}
+
+/* ========================================================================== */
+/* 16-Beam Sky Grid Continuous Waterfall Matrix (Bottleneck 2)               */
+/* ========================================================================== */
+.grid-waterfalls-matrix {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.grid-wf-cell {
+  background: #060913;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.grid-wf-cell:hover {
+  border-color: var(--accent-cyan);
+}
+
+.grid-wf-cell-header {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent-cyan);
+}
+
+.grid-wf-canvas-wrap {
+  width: 100%;
+  height: 70px;
+}
+
+.grid-wf-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ========================================================================== */
+/* Split-Triangle Correlator & Baseline Inspector (Bottleneck 3)              */
+/* ========================================================================== */
+.corr-split-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.split-canvas-wrap {
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 1 / 1;
+  background: #03060d;
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+  position: relative;
+}
+
+#corr-split-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: crosshair;
+}
+
+.split-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.correlator-bottom-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.baseline-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.input-xs {
+  width: 44px;
+  padding: 2px 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-surface, #0d1221);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+  color: #fff;
+  text-align: center;
+}
+
+/* ========================================================================== */
+/* 8x8 Vector Canvas Matrix (Bottleneck 1)                                   */
+/* ========================================================================== */
+.antenna-mask-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 480px;
+  background: #050811;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+}
+
+#antenna-mask-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: pointer;
+}
+

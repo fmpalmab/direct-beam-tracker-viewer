@@ -17,7 +17,7 @@ if [ ! -f "$KOTEKAN_BIN" ]; then
 fi
 
 echo "1. Starting Kotekan synthetic benchmark pipeline in background..."
-"$KOTEKAN_BIN" -c "$CONFIG" &
+(cd "$KOTEKAN_DIR" && "$KOTEKAN_BIN" -c "$CONFIG" -b 127.0.0.1:12048) &
 KOTEKAN_PID=$!
 echo "Kotekan PID: $KOTEKAN_PID"
 
@@ -45,4 +45,4 @@ curl -s http://127.0.0.1:12048/direct_tracker/beam_power | jq '{max_beams, num_s
 
 echo "4. Launching Viewer on http://localhost:8088..."
 cd "$VIEWER_DIR"
-uv run viewer --kotekan-url http://127.0.0.1:12048 --port 8088
+uv run viewer --host 0.0.0.0 --port 8088 --kotekan http://127.0.0.1:12048

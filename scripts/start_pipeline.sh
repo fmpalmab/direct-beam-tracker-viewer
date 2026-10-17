@@ -7,38 +7,49 @@ set -euo pipefail
 
 KOTEKAN_DIR="/home/fpalma/kotekan"
 VIEWER_DIR="/home/fpalma/direct-beam-tracker-viewer"
-CONFIG_FILE="${KOTEKAN_DIR}/charts/config/64antennas_direct_tracker.yaml"
+CONFIG_FILE="${1:-${KOTEKAN_CONFIG:-${KOTEKAN_DIR}/charts/config/64antennas_tri_engine_benchmark.yaml}}"
+if [[ "${1:-}" == "--dpdk" ]]; then
+    CONFIG_FILE="${KOTEKAN_DIR}/charts/config/64antennas_tri_engine_dpdk.yaml"
+fi
 KOTEKAN_BIN="${KOTEKAN_DIR}/build/kotekan/kotekan"
 KOTEKAN_LOG="${KOTEKAN_DIR}/kotekan_run.log"
 VIEWER_LOG="${VIEWER_DIR}/viewer.log"
-if [[ -n "${SUDO_PASS:-}" ]]; then
-    SUDO_CMD="echo '${SUDO_PASS}' | sudo -S"
+
+# Determine if config requires root privileges (e.g. DPDK vfio-pci)
+if grep -q "dpdkCore" "${CONFIG_FILE}" 2>/dev/null; then
+    if [[ -n "${SUDO_PASS:-}" ]]; then
+        RUN_CMD="echo '${SUDO_PASS}' | sudo -S"
+    else
+        RUN_CMD="sudo"
+    fi
 else
-    SUDO_CMD="sudo"
+    RUN_CMD=""
 fi
 
 echo "[1/4] Checking environment..."
+echo "  -> Using config: ${CONFIG_FILE}"
 if [[ ! -x "${KOTEKAN_BIN}" ]]; then
     echo "ERROR: Kotekan binary not found at ${KOTEKAN_BIN}. Rebuild first." >&2
     exit 1
 fi
 
 echo "[2/4] Cleaning stale hugepages & stopping old instances..."
-eval "${SUDO_CMD} rm -f /dev/hugepages/rtemap_* 2>/dev/null" || true
-eval "${SUDO_CMD} pkill -9 -f '${KOTEKAN_BIN}' 2>/dev/null" || true
+eval "${RUN_CMD} rm -f /dev/hugepages/rtemap_* 2>/dev/null" || true
+eval "${RUN_CMD} pkill -9 -f '${KOTEKAN_BIN}' 2>/dev/null" || true
+pkill -9 -f "${KOTEKAN_BIN}" 2>/dev/null || true
 pkill -9 -f "uv run viewer" 2>/dev/null || true
 pkill -9 -f "python.*viewer" 2>/dev/null || true
 sleep 1
 
-echo "[3/4] Starting Kotekan 24h Direct Beam Tracker in background..."
+echo "[3/4] Starting Kotekan Pipeline in background..."
 if command -v screen >/dev/null 2>&1; then
-    screen -dmS kotekan bash -c "${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
+    screen -dmS kotekan bash -c "cd '${KOTEKAN_DIR}' && ${RUN_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
 else
-    nohup bash -c "${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
+    nohup bash -c "cd '${KOTEKAN_DIR}' && ${RUN_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
 fi
 
 echo "Waiting for Kotekan REST API on port 12048..."
-for i in {1..20}; do
+for i in {1..30}; do
     if curl -s http://127.0.0.1:12048/direct_tracker/status >/dev/null 2>&1; then
         echo "  -> Kotekan REST API is UP!"
         break

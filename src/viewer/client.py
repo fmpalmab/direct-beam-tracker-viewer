@@ -152,6 +152,23 @@ class TrackerClient:
             raise TrackerError(resp.status_code, resp.text)
         return resp.text
 
+    async def set_auto_detect(self, enabled: bool) -> str:
+        """Enable or disable RF auto-detect antenna masking: POST /antenna_mask/configure."""
+        data = {"auto_detect_enabled": enabled}
+        resp = await self._request_with_retry(
+            "POST", "/antenna_mask/configure", json=data
+        )
+        if resp.is_error:
+            raise TrackerError(resp.status_code, resp.text)
+        return resp.text
+
+    async def reset_antenna_masks(self) -> str:
+        """Reset all antenna masks to active: POST /antenna_mask/reset."""
+        resp = await self._request_with_retry("POST", "/antenna_mask/reset")
+        if resp.is_error:
+            raise TrackerError(resp.status_code, resp.text)
+        return resp.text
+
     async def aclose(self) -> None:
         """Close client resources."""
         if self._owns_client:

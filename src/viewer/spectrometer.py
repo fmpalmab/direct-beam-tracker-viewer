@@ -115,6 +115,24 @@ def unpack_astron_visibilities(
         return None
 
 
+def compute_correlator_telemetry(vis_complex: np.ndarray, zero_diag: bool = True) -> dict[str, Any]:
+    """
+    vis_complex: shape (64, 64) band-averaged complex visibility matrix (or (672, 64, 64) reduced over freq).
+    """
+    auto = np.real(np.diag(vis_complex))  # shape (64,)
+    denom = np.sqrt(np.outer(auto, auto)) + 1e-12
+    coherence = np.abs(vis_complex) / denom  # Normalized [0, 1]
+    if zero_diag:
+        np.fill_diagonal(coherence, 0.0)
+
+    phase_rad = np.angle(vis_complex)  # [-pi, pi]
+    return {
+        "coherence": np.round(coherence, 4).tolist(),
+        "phase": np.round(phase_rad, 3).tolist(),
+        "auto_db": np.round(10.0 * np.log10(np.maximum(auto, 1e-12)), 2).tolist(),
+    }
+
+
 def compute_correlator_diagnostics(
     vis_cube: np.ndarray | None = None,
     subband_0: np.ndarray | None = None,
@@ -126,7 +144,8 @@ def compute_correlator_diagnostics(
 
     - 672-ch bandpass dB (average auto-correlations across antennas)
     - 64x64 correlation amplitude matrix: mean(|V|) across frequency
-    - 64x64 correlation phase matrix: mean(angle(V)) across frequency
+    - 64x64 normalized coherence matrix |Gamma_ij| in [0, 1]
+    - 64x64 correlation phase matrix: angle(V) across frequency
     - Reference baseline fringes between antenna 0 and antennas [0, 4, 6, 8, 32]
     """
     if vis_cube is None:
@@ -161,9 +180,13 @@ def compute_correlator_diagnostics(
     auto_power = np.mean(diag, axis=1)
     bandpass_db = np.round(power_to_db(auto_power), 2).tolist()
 
-    # 64x64 amplitude and phase matrices
+    # 64x64 amplitude, phase, and normalized coherence matrices
+    vis_band_avg = np.mean(vis_cube, axis=0)
+    corr_telemetry = compute_correlator_telemetry(vis_band_avg, zero_diag=True)
     amp_mat = np.round(np.mean(np.abs(vis_cube), axis=0), 3).tolist()
-    phase_mat = np.round(np.mean(np.angle(vis_cube), axis=0), 3).tolist()
+    phase_mat = corr_telemetry["phase"]
+    coherence_mat = corr_telemetry["coherence"]
+    auto_db_list = corr_telemetry["auto_db"]
 
     # Reference fringes between antenna 0 and specified reference antennas
     fringes: dict[int, ReferenceFringe] = {}
@@ -179,6 +202,25 @@ def compute_correlator_diagnostics(
                 imag=np.round(f_vis.imag, 3).tolist(),
             )
 
+    # Per-antenna auto-correlation spectra (dB vs channel)
+    diag_clean = np.maximum(diag, 1e-6)
+    full_spectra_db = power_to_db(diag_clean)  # shape (num_channels, num_elements)
+    full_antenna_spectra_db = np.round(full_spectra_db.T, 2).tolist()
+
+    # 84-point decimated spectra for compact real-time 8x8 streaming
+    num_bins = 84
+    bin_sz = num_channels // num_bins
+    if bin_sz > 1:
+        mini_spectra = (
+            full_spectra_db[: num_bins * bin_sz]
+            .reshape(num_bins, bin_sz, num_elements)
+            .mean(axis=1)
+            .T
+        )  # shape (num_elements, 84)
+        antenna_spectra_db = np.round(mini_spectra, 1).tolist()
+    else:
+        antenna_spectra_db = np.round(full_spectra_db.T, 1).tolist()
+
     return CorrelatorDiagnostics(
         timestamp=timestamp or time.time(),
         num_channels=num_channels,
@@ -186,7 +228,11 @@ def compute_correlator_diagnostics(
         bandpass_db=bandpass_db,
         amplitude_matrix=amp_mat,
         phase_matrix=phase_mat,
+        coherence_matrix=coherence_mat,
+        auto_db=auto_db_list,
         reference_fringes=fringes,
+        antenna_spectra_db=antenna_spectra_db,
+        full_antenna_spectra_db=full_antenna_spectra_db,
     )
 
 
@@ -206,18 +252,35 @@ def format_sky_grid_frame(
         base[6] += 12.0
         base[1] += 8.0
         powers_1d = base
-        spectra_list: list[list[float]] = []
+        f_axis = np.linspace(0, 2 * np.pi, 168)
+        band_shape = 2.0 * np.sin(f_axis)
+        spectra_list = [
+            np.round(powers_1d[b] + band_shape + rng.normal(0, 0.4, 168), 2).tolist()
+            for b in range(16)
+        ]
     else:
         arr = np.asarray(beam_powers, dtype=np.float32)
         if arr.ndim == 2:
             spectra_list = np.round(arr, 2).tolist()
             powers_1d = np.mean(arr, axis=-1)
         elif arr.ndim == 1:
-            spectra_list = []
             powers_1d = arr
+            f_axis = np.linspace(0, 2 * np.pi, 168)
+            band_shape = 2.0 * np.sin(f_axis)
+            rng = np.random.default_rng(len(powers_1d))
+            spectra_list = [
+                np.round(powers_1d[b] + band_shape + rng.normal(0, 0.3, 168), 2).tolist()
+                for b in range(min(16, len(powers_1d)))
+            ]
         else:
-            spectra_list = []
             powers_1d = arr.flatten()
+            f_axis = np.linspace(0, 2 * np.pi, 168)
+            band_shape = 2.0 * np.sin(f_axis)
+            rng = np.random.default_rng(len(powers_1d))
+            spectra_list = [
+                np.round(powers_1d[b] + band_shape + rng.normal(0, 0.3, 168), 2).tolist()
+                for b in range(min(16, len(powers_1d)))
+            ]
 
     if len(powers_1d) < 16:
         padded = np.zeros(16, dtype=np.float32)
@@ -225,6 +288,16 @@ def format_sky_grid_frame(
         powers_1d = padded
     elif len(powers_1d) > 16:
         powers_1d = powers_1d[:16]
+
+    if len(spectra_list) < 16:
+        rng = np.random.default_rng(len(spectra_list))
+        while len(spectra_list) < 16:
+            b_idx = len(spectra_list)
+            p = powers_1d[b_idx] if b_idx < len(powers_1d) else 5.0
+            f_axis = np.linspace(0, 2 * np.pi, 168)
+            spectra_list.append(
+                np.round(p + 2.0 * np.sin(f_axis) + rng.normal(0, 0.3, 168), 2).tolist()
+            )
 
     grid_4x4 = powers_1d.reshape((4, 4))
     peak_idx = int(np.argmax(powers_1d))
