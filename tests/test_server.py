@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 from starlette.testclient import TestClient
@@ -382,7 +384,10 @@ def test_websocket_multiplexing(app_and_poller) -> None:
                     received_types.add("status")
                 elif "type" in msg:
                     received_types.add(msg["type"])
-            except Exception:
+            except (Exception, asyncio.CancelledError):
+                # CancelledError derives from BaseException (3.8+): a portal
+                # teardown race while blocked on receive must end the burst
+                # collection, not fail the test.
                 break
         assert "status" in received_types
         # At least one multiplexed telemetry type is received
@@ -454,5 +459,3 @@ def test_baseline_spectrum_endpoint(app_and_poller) -> None:
         # Out of bounds antenna IDs should return 422
         res_invalid = client.get("/api/correlator/baseline/0/64")
         assert res_invalid.status_code == 422
-
-
