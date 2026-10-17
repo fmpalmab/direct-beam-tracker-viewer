@@ -329,3 +329,64 @@ def test_apply_routine_now_no_routine_returns_404(
         res = client.post("/api/routine/apply")
         assert res.status_code == 404
         assert res.json()["detail"] == "Routine not enabled"
+
+
+def test_grid_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/grid")
+        assert res.status_code == 200
+        data = res.json()
+        assert "grid_power" in data
+        assert len(data["grid_power"]) == 4
+        assert len(data["beam_powers"]) == 16
+        assert "centroid_l" in data
+        assert "centroid_m" in data
+        assert "peak_beam_id" in data
+
+
+def test_correlator_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/correlator")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["num_channels"] == 672
+        assert data["num_elements"] == 64
+        assert len(data["bandpass_db"]) == 672
+        assert len(data["amplitude_matrix"]) == 64
+        assert len(data["phase_matrix"]) == 64
+        assert len(data["reference_fringes"]) >= 5
+
+
+def test_antenna_mask_endpoint(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client:
+        res = client.get("/api/antenna_mask")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["num_elements"] == 64
+        assert len(data["antennas"]) == 64
+        assert len(data["subbands"]) == 2
+
+
+def test_websocket_multiplexing(app_and_poller) -> None:
+    app, _poller = app_and_poller
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        received_types = set()
+        # Collect initial burst of messages
+        for _ in range(6):
+            try:
+                msg = ws.receive_json()
+                if "num_active_beams" in msg:
+                    received_types.add("status")
+                elif "type" in msg:
+                    received_types.add(msg["type"])
+            except Exception:
+                break
+        assert "status" in received_types
+        # At least one multiplexed telemetry type is received
+        assert any(
+            t in received_types
+            for t in ("spectrometer", "grid", "correlator", "antenna_mask")
+        )

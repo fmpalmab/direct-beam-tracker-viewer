@@ -68,6 +68,88 @@ class MockKotekanBackend:
             }
             return httpx.Response(200, json=data)
 
+        if method == "GET" and path == "/direct_tracker/beam_power":
+            data = {
+                "rest_prefix": "/direct_tracker",
+                "enable_grid_mode": False,
+                "max_beams": 4,
+                "active_beams": self.num_active_beams,
+                "num_subbands": 2,
+                "total_freq_channels": 672,
+                "freq_start_hz": 300000000.0,
+                "freq_step_hz": 300000.0,
+                "grid_step_rad": 0.02,
+                "frame_id": 100,
+                "timestamp_utc": 1700000000.0,
+                "beam_power": [[1.0] * 672 for _ in range(4)],
+            }
+            return httpx.Response(200, json=data)
+
+        if method == "GET" and path == "/grid_tracker/beam_power":
+            data = {
+                "rest_prefix": "/grid_tracker",
+                "enable_grid_mode": True,
+                "max_beams": 16,
+                "active_beams": 16,
+                "num_subbands": 2,
+                "total_freq_channels": 672,
+                "freq_start_hz": 300000000.0,
+                "freq_step_hz": 300000.0,
+                "grid_step_rad": 0.02,
+                "frame_id": 100,
+                "timestamp_utc": 1700000000.0,
+                "beam_power": [[float(i * 10 + 5)] * 672 for i in range(16)],
+            }
+            return httpx.Response(200, json=data)
+
+        if method == "GET" and path == "/antenna_mask/status":
+            antennas = [
+                {
+                    "antenna_id": i,
+                    "enabled": i in self.active_raw_elements,
+                    "power_rms": 8.0 if i in self.active_raw_elements else 0.0,
+                    "clip_fraction": 0.001 if i in self.active_raw_elements else 0.0,
+                    "kurtosis": 3.0,
+                    "robust_z_score": 0.0,
+                    "status": "nominal" if i in self.active_raw_elements else "masked",
+                }
+                for i in range(64)
+            ]
+            data = {
+                "num_elements": 64,
+                "num_antennas": 64,
+                "auto_detect_enabled": True,
+                "blank_voltages_enabled": True,
+                "manual_mask": [
+                    1 if i in self.active_raw_elements else 0 for i in range(64)
+                ],
+                "subbands": [
+                    {
+                        "subband": 0,
+                        "freq_start_hz": 300000000.0,
+                        "active_mask": [
+                            1 if i in self.active_raw_elements else 0 for i in range(64)
+                        ],
+                        "power_rms": [8.0] * 64,
+                        "clip_fraction": [0.001] * 64,
+                    },
+                    {
+                        "subband": 1,
+                        "freq_start_hz": 400800000.0,
+                        "active_mask": [
+                            1 if i in self.active_raw_elements else 0 for i in range(64)
+                        ],
+                        "power_rms": [8.0] * 64,
+                        "clip_fraction": [0.001] * 64,
+                    },
+                ],
+                "active_antennas": len(self.active_raw_elements),
+                "active_elements": len(self.active_raw_elements),
+                "masked_antennas": 64 - len(self.active_raw_elements),
+                "antennas": antennas,
+            }
+            return httpx.Response(200, json=data)
+
         if method == "GET" and path.startswith("/inspect_frame/"):
             buffer_name = path.removeprefix("/inspect_frame/")
             if buffer_name in (
@@ -76,6 +158,13 @@ class MockKotekanBackend:
                 "test_buffer",
             ):
                 return httpx.Response(200, content=b"\x00\x01\x02\x03")
+            if buffer_name in (
+                "integrated_correlation_buffer_0",
+                "integrated_correlation_buffer_1",
+            ):
+                # 336 * 528 * 2 * 2 * 2 * 4 = 5,677,056 bytes
+                num_ints = 336 * 528 * 2 * 2 * 2
+                return httpx.Response(200, content=bytes(num_ints * 4))
             return httpx.Response(404, text="Buffer Not Found")
 
         if method == "POST" and path == "/direct_tracker/set_target":
@@ -139,10 +228,13 @@ class MockKotekanBackend:
                 200, text=f"Active beams set to {self.num_active_beams}"
             )
 
-        if method == "POST" and path == "/direct_tracker/mask_antenna":
+        if method == "POST" and path in (
+            "/antenna_mask/mask_antenna",
+            "/direct_tracker/mask_antenna",
+        ):
             body = json.loads(request.content)
             aid = body.get("antenna_id")
-            if aid is None or aid >= 1024:
+            if aid is None or aid >= 1024 or aid < 0:
                 return httpx.Response(400, text="Invalid antenna_id")
             enabled = body.get("enabled", False)
             if enabled and aid not in self.active_raw_elements:

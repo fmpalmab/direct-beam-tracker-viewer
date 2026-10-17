@@ -159,3 +159,105 @@ class InterpolationRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool
+
+
+class BeamPowerResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    rest_prefix: str = "/direct_tracker"
+    enable_grid_mode: bool = False
+    max_beams: int = 4
+    active_beams: int = 2
+    num_subbands: int = 2
+    total_freq_channels: int = 672
+    freq_start_hz: float = 300000000.0
+    freq_step_hz: float = 300000.0
+    grid_step_rad: float = 0.02
+    frame_id: int = 0
+    timestamp_utc: float = 0.0
+    beam_power: list[list[float]] = Field(default_factory=list)
+
+
+class SubbandMaskStatus(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    subband: int = 0
+    freq_start_hz: float = 300000000.0
+    active_mask: list[int] = Field(default_factory=list)
+    power_rms: list[float] = Field(default_factory=list)
+    clip_fraction: list[float] = Field(default_factory=list)
+
+
+class AntennaMetricItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    antenna_id: int
+    enabled: bool = True
+    power_rms: float = 0.0
+    clip_fraction: float = 0.0
+    kurtosis: float = 3.0
+    robust_z_score: float = 0.0
+    status: str = "nominal"
+
+
+class AntennaMaskStatus(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    num_elements: int = 64
+    num_antennas: int = 64
+    auto_detect_enabled: bool = True
+    blank_voltages_enabled: bool = True
+    manual_mask: list[int] = Field(default_factory=list)
+    subbands: list[SubbandMaskStatus] = Field(default_factory=list)
+    active_antennas: int = 64
+    active_elements: int = 64
+    masked_antennas: int = 0
+    antennas: list[AntennaMetricItem] = Field(default_factory=list)
+
+
+class SkyGridCentroid(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    l: float = 0.0  # noqa: E741
+    m: float = 0.0
+    peak_beam_id: int = 0
+    peak_power: float = 0.0
+
+
+class SkyGridFrame(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: float = 0.0
+    grid_step_rad: float = 0.02
+    grid_power: list[list[float]] = Field(default_factory=list)  # 4x4
+    beam_powers: list[float] = Field(default_factory=list)  # 16
+    peak_beam_id: int = 0
+    peak_power: float = 0.0
+    centroid_l: float = 0.0
+    centroid_m: float = 0.0
+    l_coords: list[float] = Field(default_factory=list)
+    m_coords: list[float] = Field(default_factory=list)
+    beam_power_spectra: list[list[float]] = Field(default_factory=list)
+
+
+class ReferenceFringe(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    antenna_a: int = 0
+    antenna_b: int = 0
+    amplitude: list[float] = Field(default_factory=list)
+    phase_rad: list[float] = Field(default_factory=list)
+    real: list[float] = Field(default_factory=list)
+    imag: list[float] = Field(default_factory=list)
+
+
+class CorrelatorDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: float = 0.0
+    num_channels: int = 672
+    num_elements: int = 64
+    bandpass_db: list[float] = Field(default_factory=list)
+    amplitude_matrix: list[list[float]] = Field(default_factory=list)  # 64x64
+    phase_matrix: list[list[float]] = Field(default_factory=list)  # 64x64
+    reference_fringes: dict[int, ReferenceFringe] = Field(default_factory=dict)

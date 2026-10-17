@@ -6,16 +6,25 @@ import math
 
 import numpy as np
 
-from viewer.models import BeamInfo, CelestialTarget, Status
+from viewer.models import (
+    BeamInfo,
+    CelestialTarget,
+    CorrelatorDiagnostics,
+    SkyGridFrame,
+    Status,
+)
 from viewer.spectrometer import (
     CHANNELS_PER_STREAM,
     FREQUENCIES_ALL_MHZ,
     KNOWN_CELESTIAL_TARGETS,
     TOTAL_CHANNELS,
     SpectrometerProcessor,
+    compute_correlator_diagnostics,
     compute_power_spectrum,
+    format_sky_grid_frame,
     identify_celestial_target,
     power_to_db,
+    unpack_astron_visibilities,
     unpack_formed_beams,
 )
 
@@ -183,3 +192,127 @@ def test_processor_effective_max_beams() -> None:
     assert spec_data.num_channels == TOTAL_CHANNELS
     assert len(spec_data.beams) == 2
     assert len(spec_data.frequencies_mhz) == TOTAL_CHANNELS
+
+
+def test_unpack_astron_visibilities_hermitian_symmetry() -> None:
+    num_freq = 336
+    num_elements = 64
+    num_receivers = 32
+    num_baselines = num_receivers * (num_receivers + 1) // 2  # 528
+
+    # Create synthetic raw buffer of int32 values: [336, 528, 2, 2, 2]
+    rng = np.random.default_rng(999)
+    raw_ints = rng.integers(
+        -5000, 5000, size=(num_freq, num_baselines, 2, 2, 2), dtype=np.int32
+    )
+    raw_bytes = raw_ints.tobytes()
+    assert len(raw_bytes) == num_freq * num_baselines * 2 * 2 * 2 * 4  # 5,677,056 bytes
+
+    vis = unpack_astron_visibilities(
+        raw_bytes, num_freq=num_freq, num_elements=num_elements
+    )
+    assert vis is not None
+    assert vis.shape == (num_freq, num_elements, num_elements)
+    assert vis.dtype == np.complex64
+
+    # 1. Verify exact Hermitian symmetry: V_ij = conj(V_ji) across all frequencies
+    vis_h = vis.swapaxes(1, 2).conj()
+    assert np.allclose(vis, vis_h, atol=1e-6)
+
+    # 2. Verify real diagonal: Im(V_ii) == 0 across all frequencies and elements
+    diag_imag = vis[:, np.arange(num_elements), np.arange(num_elements)].imag
+    assert np.allclose(diag_imag, 0.0, atol=1e-7)
+
+
+def test_unpack_astron_visibilities_invalid_and_empty() -> None:
+    assert unpack_astron_visibilities(None) is None
+    assert unpack_astron_visibilities(b"") is None
+    assert unpack_astron_visibilities(b"\x00" * 1000) is None
+
+
+def test_compute_correlator_diagnostics() -> None:
+    # 2 subbands each of shape (336, 64, 64)
+    v0 = np.ones((336, 64, 64), dtype=np.complex64)
+    v1 = np.full((336, 64, 64), 4.0 + 0.0j, dtype=np.complex64)
+
+    diag = compute_correlator_diagnostics(subband_0=v0, subband_1=v1)
+    assert isinstance(diag, CorrelatorDiagnostics)
+    assert diag.num_channels == 672
+    assert diag.num_elements == 64
+    assert len(diag.bandpass_db) == 672
+    # Subband 0 power 1.0 -> 0 dB, Subband 1 power 4.0 -> ~6.02 dB
+    assert math.isclose(diag.bandpass_db[0], 0.0, abs_tol=0.1)
+    assert math.isclose(diag.bandpass_db[336], 6.02, abs_tol=0.1)
+
+    # 64x64 amplitude and phase matrices
+    assert len(diag.amplitude_matrix) == 64
+    assert len(diag.amplitude_matrix[0]) == 64
+    assert len(diag.phase_matrix) == 64
+    assert len(diag.phase_matrix[0]) == 64
+
+    # Reference fringes for [0, 4, 6, 8, 32]
+    expected_refs = [0, 4, 6, 8, 32]
+    for ant in expected_refs:
+        assert ant in diag.reference_fringes
+        rf = diag.reference_fringes[ant]
+        assert rf.antenna_a == 0
+        assert rf.antenna_b == ant
+        assert len(rf.amplitude) == 672
+        assert len(rf.phase_rad) == 672
+        assert len(rf.real) == 672
+        assert len(rf.imag) == 672
+
+
+def test_compute_correlator_diagnostics_synthetic_fallback() -> None:
+    diag = compute_correlator_diagnostics(vis_cube=None)
+    assert isinstance(diag, CorrelatorDiagnostics)
+    assert diag.num_channels == 672
+    assert diag.num_elements == 64
+    assert len(diag.bandpass_db) == 672
+    assert len(diag.amplitude_matrix) == 64
+    assert len(diag.reference_fringes) >= 5
+
+
+def test_format_sky_grid_frame() -> None:
+    # 1. 1D powers with clear peak at beam index 5 (l=-0.01, m=-0.01)
+    powers = [1.0] * 16
+    powers[5] = 50.0
+    frame = format_sky_grid_frame(powers, grid_step_rad=0.02)
+    assert isinstance(frame, SkyGridFrame)
+    assert frame.peak_beam_id == 5
+    assert frame.peak_power == 50.0
+    assert frame.grid_step_rad == 0.02
+    assert len(frame.grid_power) == 4
+    assert len(frame.grid_power[0]) == 4
+    assert len(frame.beam_powers) == 16
+    assert len(frame.l_coords) == 4
+    assert len(frame.m_coords) == 4
+    # Centroid should be negative for both l and m since beam 5 is (row=1, col=1) -> -0.01, -0.01
+    assert frame.centroid_l < 0.0
+    assert frame.centroid_m < 0.0
+
+    # 2. 2D spectrum input (16, 672)
+    spectra = np.full((16, 672), 3.0, dtype=np.float32)
+    frame_spec = format_sky_grid_frame(spectra)
+    assert len(frame_spec.beam_powers) == 16
+    assert math.isclose(frame_spec.beam_powers[0], 3.0, abs_tol=0.1)
+    assert len(frame_spec.beam_power_spectra) == 16
+    assert len(frame_spec.beam_power_spectra[0]) == 672
+
+    # 3. None fallback
+    frame_fallback = format_sky_grid_frame(None)
+    assert len(frame_fallback.beam_powers) == 16
+    assert frame_fallback.peak_power > 0.0
+
+
+def test_subband_stitching_672_channels() -> None:
+    processor = SpectrometerProcessor()
+    direct_bp = [[1.0] * TOTAL_CHANNELS for _ in range(4)]
+    status = Status(num_active_beams=2)
+    spec_data = processor.process(
+        None, None, status=status, max_beams=4, direct_beam_power=direct_bp
+    )
+    assert spec_data.num_channels == TOTAL_CHANNELS
+    assert len(spec_data.frequencies_mhz) == TOTAL_CHANNELS
+    assert len(spec_data.beams) == 2
+    assert len(spec_data.beams[0].power_db) == TOTAL_CHANNELS

@@ -7,7 +7,13 @@ from typing import Any
 
 import httpx
 
-from .models import CelestialRequest, Status, TargetRequest
+from .models import (
+    AntennaMaskStatus,
+    BeamPowerResponse,
+    CelestialRequest,
+    Status,
+    TargetRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,27 @@ class TrackerClient:
             raise TrackerError(resp.status_code, resp.text)
         return Status.model_validate(resp.json())
 
+    async def get_beam_power(
+        self, prefix: str = "/direct_tracker"
+    ) -> BeamPowerResponse:
+        """Fetch stitched beam power spectrum: GET {prefix}/beam_power."""
+        clean_prefix = "/" + prefix.strip("/")
+        resp = await self._request_with_retry("GET", f"{clean_prefix}/beam_power")
+        if resp.is_error:
+            raise TrackerError(resp.status_code, resp.text)
+        return BeamPowerResponse.model_validate(resp.json())
+
+    async def get_grid_beam_power(self) -> BeamPowerResponse:
+        """Fetch 16-beam sky grid camera power: GET /grid_tracker/beam_power."""
+        return await self.get_beam_power(prefix="/grid_tracker")
+
+    async def get_antenna_mask_status(self) -> AntennaMaskStatus:
+        """Fetch aggregated antenna masking and RF health telemetry: GET /antenna_mask/status."""
+        resp = await self._request_with_retry("GET", "/antenna_mask/status")
+        if resp.is_error:
+            raise TrackerError(resp.status_code, resp.text)
+        return AntennaMaskStatus.model_validate(resp.json())
+
     async def get_inspect_frame(self, buffer_name: str) -> bytes | None:
         """Fetch raw binary frame snapshot: GET /inspect_frame/{buffer_name}."""
         try:
@@ -101,11 +128,16 @@ class TrackerClient:
         return resp.text
 
     async def mask_antenna(self, antenna_id: int, enabled: bool) -> str:
-        """Mask or unmask an antenna element: POST /direct_tracker/mask_antenna."""
+        """Mask or unmask an antenna element: POST /antenna_mask/mask_antenna."""
         data = {"antenna_id": antenna_id, "enabled": enabled}
         resp = await self._request_with_retry(
-            "POST", "/direct_tracker/mask_antenna", json=data
+            "POST", "/antenna_mask/mask_antenna", json=data
         )
+        if resp.status_code == 404:
+            # Fallback to legacy endpoint if antenna_mask not present
+            resp = await self._request_with_retry(
+                "POST", "/direct_tracker/mask_antenna", json=data
+            )
         if resp.is_error:
             raise TrackerError(resp.status_code, resp.text)
         return resp.text

@@ -72,7 +72,7 @@ async def test_mask_antenna(mock_client: TrackerClient, mock_backend) -> None:
 
     last_req = mock_backend.last_request
     assert last_req["method"] == "POST"
-    assert last_req["path"] == "/direct_tracker/mask_antenna"
+    assert last_req["path"] == "/antenna_mask/mask_antenna"
     payload = json.loads(last_req["body"])
     assert payload == {"antenna_id": 7, "enabled": True}
 
@@ -174,3 +174,35 @@ async def test_timeout_and_protocol_retry() -> None:
     reply = await client.set_num_active_beams(4)
     assert calls == 2
     assert "Success on retry" in reply
+
+
+@pytest.mark.asyncio
+async def test_get_beam_power(mock_client: TrackerClient, mock_backend) -> None:
+    bp = await mock_client.get_beam_power("/direct_tracker")
+    assert bp.rest_prefix == "/direct_tracker"
+    assert bp.max_beams == 4
+    assert bp.total_freq_channels == 672
+    assert len(bp.beam_power) == 4
+    assert len(bp.beam_power[0]) == 672
+
+
+@pytest.mark.asyncio
+async def test_get_grid_beam_power(mock_client: TrackerClient, mock_backend) -> None:
+    bp = await mock_client.get_grid_beam_power()
+    assert bp.rest_prefix == "/grid_tracker"
+    assert bp.max_beams == 16
+    assert bp.enable_grid_mode is True
+    assert len(bp.beam_power) == 16
+    assert len(bp.beam_power[0]) == 672
+
+
+@pytest.mark.asyncio
+async def test_get_antenna_mask_status(
+    mock_client: TrackerClient, mock_backend
+) -> None:
+    ams = await mock_client.get_antenna_mask_status()
+    assert ams.num_elements == 64
+    assert ams.auto_detect_enabled is True
+    assert ams.blank_voltages_enabled is True
+    assert len(ams.subbands) == 2
+    assert len(ams.antennas) == 64

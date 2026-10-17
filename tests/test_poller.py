@@ -205,3 +205,46 @@ def test_all_history() -> None:
     assert len(hist_all[1]) == 5
     # Should get most recent 5
     assert hist_all[0][-1].ts == 9.0
+
+
+@pytest.mark.asyncio
+async def test_poller_multi_cadence_telemetry() -> None:
+    from viewer.models import AntennaMaskStatus, BeamPowerResponse
+
+    client = AsyncMock(spec=TrackerClient)
+    client.get_status.return_value = Status(num_active_beams=2)
+    client.get_inspect_frame.return_value = None
+    client.get_beam_power.return_value = BeamPowerResponse(
+        rest_prefix="/direct_tracker", beam_power=[[1.0] * 672] * 4
+    )
+    client.get_grid_beam_power.return_value = BeamPowerResponse(
+        rest_prefix="/grid_tracker", beam_power=[[5.0] * 672] * 16
+    )
+    client.get_antenna_mask_status.return_value = AntennaMaskStatus(num_elements=64)
+
+    poller = StatusPoller(client=client, interval=0.1, spectrometer_interval=0.1)
+    grid_q = poller.subscribe_grid()
+    corr_q = poller.subscribe_correlator()
+    mask_q = poller.subscribe_antenna_mask()
+
+    await poller.start()
+
+    grid_item = await asyncio.wait_for(grid_q.get(), timeout=1.0)
+    assert grid_item is not None
+    assert len(grid_item.beam_powers) == 16
+    assert poller.grid_latest() is not None
+
+    corr_item = await asyncio.wait_for(corr_q.get(), timeout=1.0)
+    assert corr_item is not None
+    assert corr_item.num_channels == 672
+    assert poller.correlator_latest() is not None
+
+    mask_item = await asyncio.wait_for(mask_q.get(), timeout=1.0)
+    assert mask_item is not None
+    assert mask_item.num_elements == 64
+    assert poller.antenna_mask_latest() is not None
+
+    poller.unsubscribe_grid(grid_q)
+    poller.unsubscribe_correlator(corr_q)
+    poller.unsubscribe_antenna_mask(mask_q)
+    await poller.stop()

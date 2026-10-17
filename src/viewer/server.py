@@ -26,12 +26,16 @@ from fastapi.staticfiles import StaticFiles
 from .client import TrackerClient, TrackerError
 from .config import Settings, parse_args
 from .models import (
+    AntennaMaskStatus,
+    BeamPowerResponse,
     BeamSample,
     BeamSpectrum,
     CelestialRequest,
+    CorrelatorDiagnostics,
     EnableBeamsRequest,
     InterpolationRequest,
     MaskAntennaRequest,
+    SkyGridFrame,
     SpectrometerData,
     Status,
     TargetRequest,
@@ -177,6 +181,50 @@ def create_app(
             )
         return data.beams[beam_id]
 
+    @app.get("/api/grid", response_model=SkyGridFrame)
+    async def get_grid() -> SkyGridFrame:
+        """Return the latest 16-beam sky grid camera frame."""
+        frame = poller.grid_latest()
+        if frame is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No sky grid frame available yet from kotekan",
+            )
+        return frame
+
+    @app.get("/api/correlator", response_model=CorrelatorDiagnostics)
+    async def get_correlator() -> CorrelatorDiagnostics:
+        """Return the latest Astron WMMA correlator diagnostics."""
+        diag = poller.correlator_latest()
+        if diag is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No correlator diagnostics available yet from kotekan",
+            )
+        return diag
+
+    @app.get("/api/antenna_mask", response_model=AntennaMaskStatus)
+    async def get_antenna_mask() -> AntennaMaskStatus:
+        """Return the latest antenna masking and RF health telemetry."""
+        status = poller.antenna_mask_latest()
+        if status is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No antenna mask status available yet from kotekan",
+            )
+        return status
+
+    @app.get("/api/beam_power", response_model=BeamPowerResponse)
+    async def get_direct_beam_power() -> BeamPowerResponse:
+        """Return the latest stitched beam power spectrum for direct tracker."""
+        bp = poller.direct_beam_power_latest()
+        if bp is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No beam power available yet from kotekan",
+            )
+        return bp
+
     @app.get("/api/routine", response_model=RoutineState)
     async def get_routine() -> RoutineState:
         """Return the current observation routine state (disabled stub if off)."""
@@ -271,28 +319,52 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_updates(ws: WebSocket) -> None:
-        """Stream tracker status and spectrometer updates to connected browsers."""
+        """Stream tracker status, spectrometer, grid, correlator, and antenna mask updates to connected browsers."""
         await ws.accept()
         status_q = poller.subscribe()
         spec_q = poller.subscribe_spectrometer()
+        grid_q = poller.subscribe_grid()
+        corr_q = poller.subscribe_correlator()
+        mask_q = poller.subscribe_antenna_mask()
         routine_q = routine.subscribe() if routine is not None else None
-
-        if routine is not None:
-            await _send_ws_text(
-                ws, f'{{"type":"routine","data":{routine.state().model_dump_json()}}}'
-            )
 
         latest = poller.latest()
         if latest is not None:
             if not await _send_ws_text(ws, latest.model_dump_json()):
                 poller.unsubscribe(status_q)
                 poller.unsubscribe_spectrometer(spec_q)
+                poller.unsubscribe_grid(grid_q)
+                poller.unsubscribe_correlator(corr_q)
+                poller.unsubscribe_antenna_mask(mask_q)
                 return
+
+        if routine is not None:
+            await _send_ws_text(
+                ws, f'{{"type":"routine","data":{routine.state().model_dump_json()}}}'
+            )
 
         latest_spec = poller.spectrometer_latest()
         if latest_spec is not None:
             await _send_ws_text(
                 ws, f'{{"type":"spectrometer","data":{latest_spec.model_dump_json()}}}'
+            )
+
+        latest_grid = poller.grid_latest()
+        if latest_grid is not None:
+            await _send_ws_text(
+                ws, f'{{"type":"grid","data":{latest_grid.model_dump_json()}}}'
+            )
+
+        latest_corr = poller.correlator_latest()
+        if latest_corr is not None:
+            await _send_ws_text(
+                ws, f'{{"type":"correlator","data":{latest_corr.model_dump_json()}}}'
+            )
+
+        latest_mask = poller.antenna_mask_latest()
+        if latest_mask is not None:
+            await _send_ws_text(
+                ws, f'{{"type":"antenna_mask","data":{latest_mask.model_dump_json()}}}'
             )
 
         async def push_status() -> None:
@@ -305,6 +377,25 @@ def create_app(
                 spec = await spec_q.get()
                 await ws.send_text(
                     f'{{"type":"spectrometer","data":{spec.model_dump_json()}}}'
+                )
+
+        async def push_grid() -> None:
+            while True:
+                grid = await grid_q.get()
+                await ws.send_text(f'{{"type":"grid","data":{grid.model_dump_json()}}}')
+
+        async def push_correlator() -> None:
+            while True:
+                corr = await corr_q.get()
+                await ws.send_text(
+                    f'{{"type":"correlator","data":{corr.model_dump_json()}}}'
+                )
+
+        async def push_antenna_mask() -> None:
+            while True:
+                mask = await mask_q.get()
+                await ws.send_text(
+                    f'{{"type":"antenna_mask","data":{mask.model_dump_json()}}}'
                 )
 
         async def push_routine() -> None:
@@ -321,7 +412,14 @@ def create_app(
             except Exception:
                 pass
 
-        coros = [reader(), push_status(), push_spectrometer()]
+        coros = [
+            reader(),
+            push_status(),
+            push_spectrometer(),
+            push_grid(),
+            push_correlator(),
+            push_antenna_mask(),
+        ]
         if routine_q is not None:
             coros.append(push_routine())
         tasks = [asyncio.create_task(c) for c in coros]
@@ -338,6 +436,9 @@ def create_app(
                 routine.unsubscribe(routine_q)
             poller.unsubscribe(status_q)
             poller.unsubscribe_spectrometer(spec_q)
+            poller.unsubscribe_grid(grid_q)
+            poller.unsubscribe_correlator(corr_q)
+            poller.unsubscribe_antenna_mask(mask_q)
 
     # --- Static File Serving ---
 

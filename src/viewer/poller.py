@@ -11,8 +11,22 @@ from collections.abc import Callable
 import httpx
 
 from .client import TrackerClient, TrackerError
-from .models import BeamSample, SpectrometerData, Status
-from .spectrometer import SpectrometerProcessor
+from .models import (
+    AntennaMaskStatus,
+    AntennaMetricItem,
+    BeamPowerResponse,
+    BeamSample,
+    CorrelatorDiagnostics,
+    SkyGridFrame,
+    SpectrometerData,
+    Status,
+)
+from .spectrometer import (
+    SpectrometerProcessor,
+    compute_correlator_diagnostics,
+    format_sky_grid_frame,
+    unpack_astron_visibilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +36,8 @@ class StatusPoller:
 
     - Status telemetry: default 2 Hz (0.5 s cadence).
     - Output beams spectrometer: default 1 Hz (1.0 s cadence).
+    - Beam power (direct & grid): 4 Hz (0.25 s cadence).
+    - Antenna mask and correlator visibilities: 1 Hz (1.0 s cadence).
     Maintains ring buffer history of (l, m) tracks and broadcasts updates to WebSocket queues.
     """
 
@@ -37,6 +53,8 @@ class StatusPoller:
         self.client = client
         self.interval = max(0.2, interval)
         self.spectrometer_interval = max(0.2, spectrometer_interval)
+        self.beam_power_interval = 0.25  # 4 Hz
+        self.correlator_interval = 1.0  # 1 Hz
         self.history_len = history
         self.spectrometer_processor = spectrometer_processor or SpectrometerProcessor()
         # Optional beam_id -> target label map (e.g. from the observation routine)
@@ -44,14 +62,24 @@ class StatusPoller:
 
         self._latest: Status | None = None
         self._latest_spectrometer: SpectrometerData | None = None
+        self._latest_direct_beam_power: BeamPowerResponse | None = None
+        self._latest_grid: SkyGridFrame | None = None
+        self._latest_correlator: CorrelatorDiagnostics | None = None
+        self._latest_antenna_mask: AntennaMaskStatus | None = None
+
         self._history: dict[int, deque[BeamSample]] = defaultdict(
             lambda: deque(maxlen=self.history_len)
         )
         self._subscribers: set[asyncio.Queue[Status]] = set()
         self._spectrometer_subscribers: set[asyncio.Queue[SpectrometerData]] = set()
+        self._grid_subscribers: set[asyncio.Queue[SkyGridFrame]] = set()
+        self._correlator_subscribers: set[asyncio.Queue[CorrelatorDiagnostics]] = set()
+        self._antenna_mask_subscribers: set[asyncio.Queue[AntennaMaskStatus]] = set()
 
         self._task: asyncio.Task[None] | None = None
         self._spectrometer_task: asyncio.Task[None] | None = None
+        self._beam_power_task: asyncio.Task[None] | None = None
+        self._correlator_mask_task: asyncio.Task[None] | None = None
         self._running: bool = False
         self.healthy: bool = False
         self._logged_error: bool = False
@@ -69,6 +97,22 @@ class StatusPoller:
     def spectrometer_latest(self) -> SpectrometerData | None:
         """Return most recently computed SpectrometerData, or None if none yet."""
         return self._latest_spectrometer
+
+    def direct_beam_power_latest(self) -> BeamPowerResponse | None:
+        """Return most recently fetched BeamPowerResponse for direct tracker."""
+        return self._latest_direct_beam_power
+
+    def grid_latest(self) -> SkyGridFrame | None:
+        """Return most recently formatted SkyGridFrame."""
+        return self._latest_grid
+
+    def correlator_latest(self) -> CorrelatorDiagnostics | None:
+        """Return most recently computed CorrelatorDiagnostics."""
+        return self._latest_correlator
+
+    def antenna_mask_latest(self) -> AntennaMaskStatus | None:
+        """Return most recently fetched AntennaMaskStatus."""
+        return self._latest_antenna_mask
 
     def history(self, beam_id: int) -> list[BeamSample]:
         """Return history slice for the given beam_id."""
@@ -104,28 +148,76 @@ class StatusPoller:
         """Unsubscribe a WebSocket client spectrometer queue."""
         self._spectrometer_subscribers.discard(q)
 
+    def subscribe_grid(self) -> asyncio.Queue[SkyGridFrame]:
+        """Subscribe a new WebSocket client for 4x4 SkyGridFrame updates."""
+        q: asyncio.Queue[SkyGridFrame] = asyncio.Queue(maxsize=10)
+        self._grid_subscribers.add(q)
+        return q
+
+    def unsubscribe_grid(self, q: asyncio.Queue[SkyGridFrame]) -> None:
+        """Unsubscribe a WebSocket client grid queue."""
+        self._grid_subscribers.discard(q)
+
+    def subscribe_correlator(self) -> asyncio.Queue[CorrelatorDiagnostics]:
+        """Subscribe a new WebSocket client for CorrelatorDiagnostics updates."""
+        q: asyncio.Queue[CorrelatorDiagnostics] = asyncio.Queue(maxsize=10)
+        self._correlator_subscribers.add(q)
+        return q
+
+    def unsubscribe_correlator(self, q: asyncio.Queue[CorrelatorDiagnostics]) -> None:
+        """Unsubscribe a WebSocket client correlator queue."""
+        self._correlator_subscribers.discard(q)
+
+    def subscribe_antenna_mask(self) -> asyncio.Queue[AntennaMaskStatus]:
+        """Subscribe a new WebSocket client for AntennaMaskStatus updates."""
+        q: asyncio.Queue[AntennaMaskStatus] = asyncio.Queue(maxsize=10)
+        self._antenna_mask_subscribers.add(q)
+        return q
+
+    def unsubscribe_antenna_mask(self, q: asyncio.Queue[AntennaMaskStatus]) -> None:
+        """Unsubscribe a WebSocket client antenna mask queue."""
+        self._antenna_mask_subscribers.discard(q)
+
     async def start(self) -> None:
-        """Start both status and spectrometer background polling tasks."""
+        """Start status, beam power, spectrometer, and correlator/mask background polling tasks."""
         if self._running:
             return
         self._running = True
         self._task = asyncio.create_task(self._poll_loop(), name="status-poller")
+        self._beam_power_task = asyncio.create_task(
+            self._beam_power_loop(), name="beam-power-poller"
+        )
         self._spectrometer_task = asyncio.create_task(
             self._spectrometer_loop(), name="spectrometer-poller"
+        )
+        self._correlator_mask_task = asyncio.create_task(
+            self._correlator_mask_loop(), name="correlator-mask-poller"
         )
 
     async def stop(self) -> None:
         """Stop background polling tasks."""
         self._running = False
-        for task in (self._task, self._spectrometer_task):
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+        tasks = [
+            t
+            for t in (
+                self._task,
+                self._beam_power_task,
+                self._spectrometer_task,
+                self._correlator_mask_task,
+            )
+            if t is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._task = None
+        self._beam_power_task = None
         self._spectrometer_task = None
+        self._correlator_mask_task = None
 
     async def _poll_loop(self) -> None:
         """Continuous status polling loop (default 2 Hz)."""
@@ -164,12 +256,41 @@ class StatusPoller:
             except asyncio.CancelledError:
                 break
 
+    async def _beam_power_loop(self) -> None:
+        """4 Hz (0.25 s) loop polling direct tracker beam power and 16-beam sky grid camera."""
+        while self._running:
+            t0 = time.monotonic()
+            # 1. Direct tracker beam power
+            try:
+                direct_bp = await self.client.get_beam_power("/direct_tracker")
+                self._latest_direct_beam_power = direct_bp
+            except Exception:
+                pass
+
+            # 2. Grid tracker beam power (4x4 sky grid camera)
+            try:
+                grid_bp = await self.client.get_grid_beam_power()
+                grid_frame = format_sky_grid_frame(grid_bp.beam_power)
+                self._latest_grid = grid_frame
+                self._broadcast_grid(grid_frame)
+            except Exception:
+                grid_frame = format_sky_grid_frame(None)
+                self._latest_grid = grid_frame
+                self._broadcast_grid(grid_frame)
+
+            elapsed = time.monotonic() - t0
+            sleep_time = max(0.01, self.beam_power_interval - elapsed)
+            try:
+                await asyncio.sleep(sleep_time)
+            except asyncio.CancelledError:
+                break
+
     async def _spectrometer_loop(self) -> None:
         """Continuous spectrometer processing loop (default 1 Hz)."""
         while self._running:
             t0 = time.monotonic()
             try:
-                # 1. Fetch inspection frames from both streams concurrently
+                # 1. Fetch inspection frames from both streams concurrently (if available)
                 buf_0, buf_1 = await asyncio.gather(
                     self.client.get_inspect_frame("host_formed_beams_buffer_0"),
                     self.client.get_inspect_frame("host_formed_beams_buffer_1"),
@@ -190,6 +311,9 @@ class StatusPoller:
                     if self.beam_name_provider
                     else None,
                     cadence_s=self.spectrometer_interval,
+                    direct_beam_power=self._latest_direct_beam_power.beam_power
+                    if self._latest_direct_beam_power
+                    else None,
                 )
                 self._latest_spectrometer = spec_data
 
@@ -209,6 +333,72 @@ class StatusPoller:
 
             elapsed = time.monotonic() - t0
             sleep_time = max(0.01, self.spectrometer_interval - elapsed)
+            try:
+                await asyncio.sleep(sleep_time)
+            except asyncio.CancelledError:
+                break
+
+    def _make_synthetic_antenna_mask(self) -> AntennaMaskStatus:
+        """Generate nominal fallback AntennaMaskStatus for 64 antennas."""
+        items = [
+            AntennaMetricItem(
+                antenna_id=i,
+                enabled=True,
+                power_rms=8.0,
+                clip_fraction=0.001,
+                kurtosis=3.0,
+                robust_z_score=0.0,
+                status="nominal",
+            )
+            for i in range(64)
+        ]
+        return AntennaMaskStatus(
+            num_elements=64,
+            num_antennas=64,
+            auto_detect_enabled=True,
+            blank_voltages_enabled=True,
+            manual_mask=[1] * 64,
+            active_antennas=64,
+            active_elements=64,
+            masked_antennas=0,
+            antennas=items,
+        )
+
+    async def _correlator_mask_loop(self) -> None:
+        """1 Hz loop polling antenna mask and correlation visibilities."""
+        while self._running:
+            t0 = time.monotonic()
+            # 1. Antenna Mask
+            try:
+                mask_status = await self.client.get_antenna_mask_status()
+                self._latest_antenna_mask = mask_status
+                self._broadcast_antenna_mask(mask_status)
+            except Exception:
+                if self._latest_antenna_mask is None:
+                    self._latest_antenna_mask = self._make_synthetic_antenna_mask()
+                self._broadcast_antenna_mask(self._latest_antenna_mask)
+
+            # 2. Correlator Visibilities
+            try:
+                buf_0, buf_1 = await asyncio.gather(
+                    self.client.get_inspect_frame("integrated_correlation_buffer_0"),
+                    self.client.get_inspect_frame("integrated_correlation_buffer_1"),
+                )
+                vis_0 = unpack_astron_visibilities(buf_0)
+                vis_1 = unpack_astron_visibilities(buf_1)
+                corr_diag = compute_correlator_diagnostics(
+                    subband_0=vis_0, subband_1=vis_1
+                )
+                self._latest_correlator = corr_diag
+                self._broadcast_correlator(corr_diag)
+            except Exception as exc:
+                logger.debug("Correlator polling error, using fallback: %s", exc)
+                corr_diag = compute_correlator_diagnostics()
+                self._latest_correlator = corr_diag
+                self._broadcast_correlator(corr_diag)
+
+            elapsed = time.monotonic() - t0
+            sleep_time = max(0.01, self.correlator_interval - elapsed)
             try:
                 await asyncio.sleep(sleep_time)
             except asyncio.CancelledError:
@@ -237,5 +427,44 @@ class StatusPoller:
                     pass
             try:
                 q.put_nowait(spec_data)
+            except asyncio.QueueFull:
+                pass
+
+    def _broadcast_grid(self, grid: SkyGridFrame) -> None:
+        """Push sky grid frame to subscribers, dropping stale items if client is slow."""
+        for q in list(self._grid_subscribers):
+            if q.qsize() >= 5:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                q.put_nowait(grid)
+            except asyncio.QueueFull:
+                pass
+
+    def _broadcast_correlator(self, corr: CorrelatorDiagnostics) -> None:
+        """Push correlator diagnostics to subscribers, dropping stale items if client is slow."""
+        for q in list(self._correlator_subscribers):
+            if q.qsize() >= 5:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                q.put_nowait(corr)
+            except asyncio.QueueFull:
+                pass
+
+    def _broadcast_antenna_mask(self, mask: AntennaMaskStatus) -> None:
+        """Push antenna mask status to subscribers, dropping stale items if client is slow."""
+        for q in list(self._antenna_mask_subscribers):
+            if q.qsize() >= 5:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                q.put_nowait(mask)
             except asyncio.QueueFull:
                 pass

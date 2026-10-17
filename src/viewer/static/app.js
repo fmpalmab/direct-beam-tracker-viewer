@@ -1,5 +1,8 @@
-// Direct Beam Tracker Viewer — Frontend Client
+// Direct Beam Tracker & Observatory Dashboard — Frontend Client (F4.1–F4.6)
 (function() {
+  'use strict';
+
+  // --- Constants & Color Schemes ---
   const BEAM_COLORS = [
     '#00e5ff', '#ff9100', '#00e676', '#d500f9',
     '#ff1744', '#ffea00', '#2979ff', '#ff4081',
@@ -7,37 +10,69 @@
     '#eab308', '#ec4899', '#84cc16', '#6366f1'
   ];
 
-  let currentStatus = null;
-  let routineState = null;
-  let selectedBeamId = 0;
-  let beamTrails = {};
+  const CELESTIAL_PRESETS = {
+    'cas_a': { ra: 350.866, dec: 58.812 },
+    'cyg_a': { ra: 299.868, dec: 40.734 },
+    'crab': { ra: 83.633, dec: 22.014 },
+    'vir_a': { ra: 187.706, dec: 12.391 },
+    '3c273': { ra: 187.278, dec: 2.052 },
+    'psr_b0329': { ra: 53.248, dec: 54.579 },
+    'sun': { ra: 0.0, dec: 0.0 }
+  };
+
+  // --- Global Application State ---
+  let activeTab = 'tab-tracker';
   let ws = null;
-  let pollTimer = null;
+  let pollTimerFast = null;
+  let pollTimerSlow = null;
   let wsRetryTimer = null;
   let toastTimer = null;
 
-  // DOM Elements
-  const canvas = document.getElementById('sky-canvas');
-  const ctx = canvas.getContext('2d');
+  // Telemetry caches
+  let currentStatus = null;
+  let routineState = null;
+  let latestSpectrometer = null;
+  let latestGrid = null;
+  let latestCorrelator = null;
+  let latestAntennaMask = null;
+
+  // Tab 1 (Tracker) State
+  let selectedBeamId = 0;
+  let beamTrails = {};
+  let specViewMode = 'all';
+  let specHover = { active: false, x: 0, y: 0 };
+  let specZoom = { fMin: 300.0, fMax: 501.3, dbMin: -45.0, dbMax: 10.0, userZoomed: false };
+  let waterfallHistory = []; // array of { timestamp, powers: [672] }
+  let waterfallBeamId = 0;
+  const MAX_WATERFALL_ROWS = 90;
+
+  // Tab 2 (Grid Camera) State
+  let gridSliceMode = 'full'; // 'full', 'sub0', 'sub1'
+  let gridDisplayMode = 'contour'; // 'contour', 'cells'
+  let gridHover = { active: false, x: 0, y: 0, row: -1, col: -1, beamId: -1 };
+
+  // Tab 3 (Correlator) State
+  let fringeAntenna = 4; // one of 0, 4, 6, 8, 32
+  let fringeMode = 'ri'; // 'ri', 'amp', 'phase'
+  let corrAmpHover = { active: false, i: -1, j: -1, val: 0 };
+  let corrPhaseHover = { active: false, i: -1, j: -1, val: 0 };
+  let bandpassHover = { active: false, freq: 0, power: 0 };
+  let fringeHover = { active: false, freq: 0, val: 0 };
+
+  // --- DOM Elements ---
+  // Header
+  const utcClockEl = document.getElementById('utc-clock');
   const connBadge = document.getElementById('conn-badge');
   const connLabel = document.getElementById('conn-label');
-  const activeSummary = document.getElementById('active-summary');
-  const activeAntennasCount = document.getElementById('active-antennas-count');
+  const activeBeamsSummary = document.getElementById('active-beams-summary');
+  const activeElementsSummary = document.getElementById('active-elements-summary');
   const routineSummary = document.getElementById('routine-summary');
-  const beamTableBody = document.getElementById('beam-table-body');
-  const antennaGrid = document.getElementById('antenna-grid');
-  const numBeamsSelect = document.getElementById('num-beams-select');
-  const applyBeamsBtn = document.getElementById('apply-beams-btn');
-  const interpToggle = document.getElementById('interp-toggle');
   const toast = document.getElementById('toast-message');
+
+  // Tab 1 Elements
+  const skyCanvas = document.getElementById('sky-canvas');
+  const skyCtx = skyCanvas ? skyCanvas.getContext('2d') : null;
   const cursorCoords = document.getElementById('cursor-coords');
-
-  const lmBeamSelect = document.getElementById('lm-beam-id');
-  const celBeamSelect = document.getElementById('cel-beam-id');
-  const formSteerLm = document.getElementById('form-steer-lm');
-  const formSteerCel = document.getElementById('form-steer-celestial');
-
-  // Spectrometer DOM Elements
   const specCanvas = document.getElementById('spectrometer-canvas');
   const specCtx = specCanvas ? specCanvas.getContext('2d') : null;
   const specViewSelect = document.getElementById('spec-view-select');
@@ -45,28 +80,57 @@
   const specCursorReadout = document.getElementById('spec-cursor-readout');
   const specLegend = document.getElementById('spec-legend');
   const specStats = document.getElementById('spec-stats');
+  const waterfallCanvas = document.getElementById('waterfall-canvas');
+  const waterfallCtx = waterfallCanvas ? waterfallCanvas.getContext('2d') : null;
+  const waterfallBeamSelect = document.getElementById('waterfall-beam-select');
+  const waterfallClearBtn = document.getElementById('waterfall-clear-btn');
+  const numBeamsSelect = document.getElementById('num-beams-select');
+  const applyBeamsBtn = document.getElementById('apply-beams-btn');
+  const interpToggle = document.getElementById('interp-toggle');
+  const beamTableBody = document.getElementById('beam-table-body');
+  const tabBtnLm = document.getElementById('tab-btn-lm');
+  const tabBtnCelestial = document.getElementById('tab-btn-celestial');
+  const formSteerLm = document.getElementById('form-steer-lm');
+  const formSteerCelestial = document.getElementById('form-steer-celestial');
+  const lmBeamSelect = document.getElementById('lm-beam-id');
+  const celBeamSelect = document.getElementById('cel-beam-id');
+  const celPresetSelect = document.getElementById('cel-preset-select');
 
-  // All Beams Grid View Elements
-  const mapPanel = document.getElementById('map-panel');
-  const specPanel = document.getElementById('spectrometer-panel');
-  const allBeamsPanel = document.getElementById('all-beams-panel');
-  const allBeamsGridEl = document.getElementById('all-beams-grid');
-  const btnViewSingle = document.getElementById('btn-view-single');
-  const btnViewGrid = document.getElementById('btn-view-grid');
-  const btnViewSingleGrid = document.getElementById('btn-view-single-grid');
-  const btnViewGridActive = document.getElementById('btn-view-grid-active');
+  // Tab 2 Elements
+  const gridCanvas = document.getElementById('grid-canvas');
+  const gridCtx = gridCanvas ? gridCanvas.getContext('2d') : null;
+  const gridHoverReadout = document.getElementById('grid-hover-readout');
+  const gridCentroidReadout = document.getElementById('grid-centroid-readout');
+  const gridPeakReadout = document.getElementById('grid-peak-readout');
+  const gridTotalFlux = document.getElementById('grid-total-flux');
+  const gridBeamTbody = document.getElementById('grid-beam-tbody');
+  const gridCbMin = document.getElementById('grid-cb-min');
+  const gridCbMax = document.getElementById('grid-cb-max');
 
-  let currentViewMode = 'overview';
-  let historyAllFetched = false;
-  let allBeamsGrid = null;
+  // Tab 3 Elements
+  const corrAmpCanvas = document.getElementById('corr-amp-canvas');
+  const corrAmpCtx = corrAmpCanvas ? corrAmpCanvas.getContext('2d') : null;
+  const corrAmpHoverEl = document.getElementById('corr-amp-hover');
+  const corrAmpCbMax = document.getElementById('corr-amp-cb-max');
+  const corrPhaseCanvas = document.getElementById('corr-phase-canvas');
+  const corrPhaseCtx = corrPhaseCanvas ? corrPhaseCanvas.getContext('2d') : null;
+  const corrPhaseHoverEl = document.getElementById('corr-phase-hover');
+  const corrBandpassCanvas = document.getElementById('corr-bandpass-canvas');
+  const corrBandpassCtx = corrBandpassCanvas ? corrBandpassCanvas.getContext('2d') : null;
+  const corrBandpassHoverEl = document.getElementById('corr-bandpass-hover');
+  const fringeCanvas = document.getElementById('fringe-canvas');
+  const fringeCtx = fringeCanvas ? fringeCanvas.getContext('2d') : null;
+  const fringeHoverEl = document.getElementById('fringe-hover');
 
-  // Spectrometer State
-  let latestSpectrometer = null;
-  let specViewMode = 'all';
-  let specHover = { active: false, x: 0, y: 0 };
-  let specZoom = { fMin: 300.0, fMax: 501.3, dbMin: -45.0, dbMax: 10.0, userZoomed: false };
-  let specDrag = { isDragging: false, startX: 0, startY: 0, currentX: 0, currentY: 0 };
+  // Tab 4 Elements
+  const rfActiveBadge = document.getElementById('rf-active-badge');
+  const rfMaskedBadge = document.getElementById('rf-masked-badge');
+  const rfAutodetectBadge = document.getElementById('rf-autodetect-badge');
+  const rfBlankingBadge = document.getElementById('rf-blanking-badge');
+  const arrayGrid8x8 = document.getElementById('array-grid-8x8');
+  const btnUnmaskAll = document.getElementById('btn-unmask-all');
 
+  // --- Utility Functions ---
   function showToast(msg, isError = false) {
     if (toastTimer) clearTimeout(toastTimer);
     toast.textContent = msg;
@@ -81,8 +145,123 @@
     connLabel.textContent = text;
   }
 
-  // --- WebSocket & Fallback Polling ---
+  function startUtcClock() {
+    function tick() {
+      const now = new Date();
+      const iso = now.toISOString(); // e.g. 2026-10-17T16:50:00.123Z
+      const timeStr = iso.substring(11, 19);
+      if (utcClockEl) utcClockEl.textContent = `${timeStr} UTC`;
+    }
+    tick();
+    setInterval(tick, 1000);
+  }
 
+  // --- Colormap Palettes ---
+  function viridisColor(val) {
+    // val in [0, 1]
+    const clamped = Math.max(0, Math.min(1, val));
+    const r = Math.round(255 * (0.28 + 0.72 * Math.sin(clamped * Math.PI - 0.2)));
+    const g = Math.round(255 * (0.01 + 0.95 * Math.sin(clamped * Math.PI * 0.9)));
+    const b = Math.round(255 * (0.35 + 0.65 * Math.cos(clamped * Math.PI * 0.8)));
+    return [Math.max(0, Math.min(255, r)), Math.max(0, Math.min(255, g)), Math.max(0, Math.min(255, b))];
+  }
+
+  function infernoColor(val) {
+    // val in [0, 1]
+    const t = Math.max(0, Math.min(1, val));
+    let r, g, b;
+    if (t < 0.25) {
+      r = Math.round(255 * (t * 4 * 0.4));
+      g = 0;
+      b = Math.round(255 * (t * 4 * 0.5));
+    } else if (t < 0.5) {
+      const f = (t - 0.25) * 4;
+      r = Math.round(255 * (0.4 + 0.4 * f));
+      g = Math.round(255 * (0.1 * f));
+      b = Math.round(255 * (0.5 * (1 - f)));
+    } else if (t < 0.75) {
+      const f = (t - 0.5) * 4;
+      r = Math.round(255 * (0.8 + 0.18 * f));
+      g = Math.round(255 * (0.1 + 0.5 * f));
+      b = Math.round(255 * (0.1 * f));
+    } else {
+      const f = (t - 0.75) * 4;
+      r = 255;
+      g = Math.round(255 * (0.6 + 0.38 * f));
+      b = Math.round(255 * (0.1 + 0.8 * f));
+    }
+    return [Math.max(0, Math.min(255, r)), Math.max(0, Math.min(255, g)), Math.max(0, Math.min(255, b))];
+  }
+
+  function turboColor(val) {
+    // Fast polynomial Turbo approximation
+    const x = Math.max(0, Math.min(1, val));
+    const r = Math.round(255 * Math.max(0, Math.min(1, 0.1357 + x * (4.6153 + x * (-42.6603 + x * (132.131 - x * (152.9423 - 59.2863 * x)))))));
+    const g = Math.round(255 * Math.max(0, Math.min(1, 0.0914 + x * (2.1941 + x * (4.8429 + x * (-14.1850 + x * (4.27726 + 2.82956 * x)))))));
+    const b = Math.round(255 * Math.max(0, Math.min(1, 0.1066 + x * (12.585 + x * (-60.197 + x * (109.0745 - x * (88.5022 - 26.8115 * x)))))));
+    return [r, g, b];
+  }
+
+  function cyclicPhaseColor(rad) {
+    // rad in [-pi, +pi] -> normalize to [0, 1]
+    const norm = (rad + Math.PI) / (2 * Math.PI);
+    const t = Math.max(0, Math.min(1, norm));
+    // Blue (-pi) -> Cyan -> White (0) -> Amber -> Red (+pi)
+    let r, g, b;
+    if (t < 0.5) {
+      const f = t * 2;
+      r = Math.round(59 + (255 - 59) * f);
+      g = Math.round(130 + (255 - 130) * f);
+      b = 255;
+    } else {
+      const f = (t - 0.5) * 2;
+      r = 255;
+      g = Math.round(255 * (1 - f * 0.7));
+      b = Math.round(255 * (1 - f));
+    }
+    return [r, g, b];
+  }
+
+  // --- Navigation Tab Switching Router ---
+  function initTabRouter() {
+    const tabButtons = document.querySelectorAll('.nav-tab');
+    tabButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetTab = btn.getAttribute('data-tab');
+        if (targetTab === activeTab) return;
+
+        activeTab = targetTab;
+
+        tabButtons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        const panel = document.getElementById(targetTab);
+        if (panel) panel.classList.add('active');
+
+        // Redraw canvases on active tab
+        requestAnimationFrame(renderActiveTabCanvases);
+      });
+    });
+  }
+
+  function renderActiveTabCanvases() {
+    if (activeTab === 'tab-tracker') {
+      drawSkyMap();
+      drawSpectrometer();
+      drawWaterfall();
+    } else if (activeTab === 'tab-grid') {
+      drawGridHeatmap();
+    } else if (activeTab === 'tab-correlator') {
+      drawCorrelatorMatrices();
+      drawBandpassSpectrum();
+      drawFringePlot();
+    } else if (activeTab === 'tab-array') {
+      renderArrayGrid();
+    }
+  }
+
+  // --- WebSocket Multi-Stream Client & REST Fallback ---
   function initWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}/ws`;
@@ -90,69 +269,174 @@
 
     ws.onopen = () => {
       setConnectionState('live', 'Live (WS)');
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
+      stopFallbackPolling();
     };
 
     ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'spectrometer') {
-          handleSpectrometerUpdate(data.data || data);
-        } else if (data.type === 'routine') {
-          handleRoutineUpdate(data.data || data);
-        } else {
-          handleStatusUpdate(data);
-        }
+        const payload = JSON.parse(event.data);
+        handleIncomingMessage(payload);
       } catch (err) {
-        console.error('Failed to parse websocket message', err);
+        console.error('Failed to parse WebSocket telemetry', err);
       }
     };
 
     ws.onclose = () => {
-      setConnectionState('fallback', 'Polling (2s)');
-      startFallback();
+      setConnectionState('fallback', 'Polling (REST)');
+      startFallbackPolling();
       clearTimeout(wsRetryTimer);
-      wsRetryTimer = setTimeout(initWebSocket, 5000);
+      wsRetryTimer = setTimeout(initWebSocket, 4000);
     };
 
     ws.onerror = () => {
-      ws.close();
+      if (ws) ws.close();
     };
   }
 
-  function startFallback() {
-    if (pollTimer) return;
-    pollTimer = setInterval(async () => {
+  function handleIncomingMessage(msg) {
+    if (!msg) return;
+
+    if (msg.type === 'spectrometer') {
+      handleSpectrometerUpdate(msg.data || msg);
+    } else if (msg.type === 'grid') {
+      handleGridUpdate(msg.data || msg);
+    } else if (msg.type === 'correlator') {
+      handleCorrelatorUpdate(msg.data || msg);
+    } else if (msg.type === 'antenna_mask') {
+      handleAntennaMaskUpdate(msg.data || msg);
+    } else if (msg.type === 'routine') {
+      handleRoutineUpdate(msg.data || msg);
+    } else if (msg.type === 'status' || msg.num_active_beams !== undefined) {
+      handleStatusUpdate(msg.data || msg);
+    }
+  }
+
+  function startFallbackPolling() {
+    if (pollTimerFast) return;
+
+    // Fast 1 Hz loop for status, spectrometer, grid
+    pollTimerFast = setInterval(async () => {
       try {
-        const res = await fetch('/api/status');
-        if (res.ok) {
-          const data = await res.json();
-          setConnectionState('fallback', 'Polling (2s)');
-          handleStatusUpdate(data);
+        const [resStatus, resSpec, resGrid] = await Promise.all([
+          fetch('/api/status').catch(() => null),
+          fetch('/api/spectrometer').catch(() => null),
+          fetch('/api/grid').catch(() => null),
+        ]);
+
+        if (resStatus && resStatus.ok) {
+          handleStatusUpdate(await resStatus.json());
+          setConnectionState('fallback', 'Polling (REST)');
         } else {
           setConnectionState('disconnected', 'Disconnected');
         }
 
-        const resSpec = await fetch('/api/spectrometer');
-        if (resSpec.ok) {
-          const specData = await resSpec.json();
-          handleSpectrometerUpdate(specData);
+        if (resSpec && resSpec.ok) {
+          handleSpectrometerUpdate(await resSpec.json());
         }
 
-        const resRoutine = await fetch('/api/routine');
-        if (resRoutine.ok) {
-          handleRoutineUpdate(await resRoutine.json());
+        if (resGrid && resGrid.ok) {
+          handleGridUpdate(await resGrid.json());
         }
       } catch (e) {
         setConnectionState('disconnected', 'Disconnected');
       }
+    }, 1000);
+
+    // Slow 2 Hz loop for correlator, antenna mask, routine
+    pollTimerSlow = setInterval(async () => {
+      try {
+        const [resCorr, resMask, resRoutine] = await Promise.all([
+          fetch('/api/correlator').catch(() => null),
+          fetch('/api/antenna_mask').catch(() => null),
+          fetch('/api/routine').catch(() => null),
+        ]);
+
+        if (resCorr && resCorr.ok) {
+          handleCorrelatorUpdate(await resCorr.json());
+        }
+        if (resMask && resMask.ok) {
+          handleAntennaMaskUpdate(await resMask.json());
+        }
+        if (resRoutine && resRoutine.ok) {
+          handleRoutineUpdate(await resRoutine.json());
+        }
+      } catch (e) {
+        // Handled silently
+      }
     }, 2000);
   }
 
-  // --- Observation Routine ---
+  function stopFallbackPolling() {
+    if (pollTimerFast) {
+      clearInterval(pollTimerFast);
+      pollTimerFast = null;
+    }
+    if (pollTimerSlow) {
+      clearInterval(pollTimerSlow);
+      pollTimerSlow = null;
+    }
+  }
+
+  // --- Handlers for Telemetry Streams ---
+
+  // 1. Status Telemetry
+  function handleStatusUpdate(status) {
+    if (!status) return;
+    currentStatus = status;
+
+    // Header status bar
+    const maxBeams = 4;
+    const activeBeams = status.num_active_beams !== undefined ? status.num_active_beams : (status.beams ? status.beams.length : 0);
+    if (activeBeamsSummary) {
+      activeBeamsSummary.textContent = `${activeBeams} / ${maxBeams}`;
+    }
+
+    const activeAnts = status.active_antennas !== undefined ? status.active_antennas : 64;
+    if (activeElementsSummary) {
+      activeElementsSummary.textContent = `${activeAnts} / 64`;
+    }
+
+    if (numBeamsSelect && document.activeElement !== numBeamsSelect) {
+      numBeamsSelect.value = activeBeams;
+    }
+
+    if (interpToggle) {
+      interpToggle.checked = !!status.subframe_interpolation_enabled;
+    }
+
+    updateBeamSelects(status.beams || []);
+    renderBeamTable(status.beams || []);
+
+    if (activeTab === 'tab-tracker') {
+      requestAnimationFrame(drawSkyMap);
+    }
+  }
+
+  // 2. Routine Telemetry
+  function handleRoutineUpdate(data) {
+    routineState = data;
+    if (!routineSummary) return;
+
+    if (!routineState || !routineState.enabled) {
+      routineSummary.textContent = 'Routine: OFF';
+      routineSummary.className = 'routine-badge off';
+    } else if (routineState.last_error) {
+      routineSummary.textContent = `Routine: ERR (${routineState.last_error.substring(0, 14)})`;
+      routineSummary.className = 'routine-badge err';
+    } else {
+      const nextTime = routineState.next_slot_time_local || '--:--';
+      routineSummary.textContent = `Routine: ON (next ${nextTime})`;
+      routineSummary.className = 'routine-badge on';
+    }
+
+    if (currentStatus && currentStatus.beams) {
+      renderBeamTable(currentStatus.beams);
+      updateBeamSelects(currentStatus.beams);
+    }
+    if (activeTab === 'tab-tracker') {
+      requestAnimationFrame(drawSkyMap);
+    }
+  }
 
   function beamName(beamId) {
     if (routineState && routineState.beam_names) {
@@ -161,62 +445,100 @@
     return null;
   }
 
-  function handleRoutineUpdate(data) {
-    routineState = data;
+  // 3. Spectrometer Telemetry (Engine 1)
+  function handleSpectrometerUpdate(specData) {
+    if (!specData || !specData.beams) return;
+    latestSpectrometer = specData;
 
-    if (routineSummary) {
-      if (!routineState || !routineState.enabled) {
-        routineSummary.textContent = 'Routine: off';
-        routineSummary.parentElement.hidden = routineState ? !routineState.enabled : true;
-      } else if (routineState.last_error) {
-        routineSummary.textContent = `Routine: ERROR (${routineState.last_error})`;
-        routineSummary.parentElement.hidden = false;
-      } else {
-        const next = routineState.next_slot_time_local || '--:--';
-        routineSummary.textContent = `Routine: ON · next change ${next}`;
-        routineSummary.parentElement.hidden = false;
+    updateSpectrometerViewSelect(specData.beams);
+    renderSpectrometerFooter(specData.beams);
+
+    // Append to waterfall history
+    const b = specData.beams[waterfallBeamId] || specData.beams['0'] || specData.beams[0];
+    if (b && b.power_db && b.power_db.length > 0) {
+      waterfallHistory.unshift({
+        timestamp: specData.timestamp,
+        power: b.power_db
+      });
+      if (waterfallHistory.length > MAX_WATERFALL_ROWS) {
+        waterfallHistory.pop();
       }
     }
 
-    if (currentStatus) {
-      updateBeamSelects(currentStatus.beams);
-      renderBeamTable(currentStatus.beams);
-    }
-    requestAnimationFrame(drawSkyMap);
-  }
-
-  // --- Status Update Handler ---
-
-  function handleStatusUpdate(status) {
-    currentStatus = status;
-
-    // Header stats
-    activeSummary.textContent = `${status.num_active_beams} beam${status.num_active_beams === 1 ? '' : 's'} active`;
-    activeAntennasCount.textContent = status.active_antennas;
-
-    // Inputs sync
-    if (document.activeElement !== numBeamsSelect) {
-      numBeamsSelect.value = status.num_active_beams;
-    }
-    interpToggle.checked = status.subframe_interpolation_enabled;
-
-    // Beam dropdowns
-    updateBeamSelects(status.beams);
-
-    // Table render
-    renderBeamTable(status.beams);
-
-    // Antenna grid render
-    renderAntennaGrid(status.active_raw_elements);
-
-    // Redraw canvas
-    requestAnimationFrame(drawSkyMap);
-
-    // Update all beams grid
-    if (allBeamsGrid) {
-      allBeamsGrid.updateStatus(status);
+    if (activeTab === 'tab-tracker') {
+      requestAnimationFrame(drawSpectrometer);
+      requestAnimationFrame(drawWaterfall);
     }
   }
+
+  // 4. Sky Grid Camera Telemetry (Engine 2)
+  function handleGridUpdate(frame) {
+    if (!frame) return;
+    latestGrid = frame;
+
+    // Telemetry readouts
+    if (gridCentroidReadout) {
+      const cl = (frame.centroid_l !== undefined) ? frame.centroid_l.toFixed(4) : '0.0000';
+      const cm = (frame.centroid_m !== undefined) ? frame.centroid_m.toFixed(4) : '0.0000';
+      gridCentroidReadout.textContent = `(${cl}, ${cm})`;
+    }
+
+    if (gridPeakReadout) {
+      const pId = frame.peak_beam_id !== undefined ? frame.peak_beam_id : 0;
+      const pDb = frame.peak_power !== undefined ? frame.peak_power.toFixed(1) : '--';
+      gridPeakReadout.textContent = `Beam ${pId} (${pDb} dB)`;
+    }
+
+    if (gridTotalFlux && frame.beam_powers) {
+      let sumLin = 0;
+      frame.beam_powers.forEach(p => { sumLin += Math.pow(10, p / 10); });
+      const totalDb = (10 * Math.log10(Math.max(1e-12, sumLin))).toFixed(1);
+      gridTotalFlux.textContent = `${totalDb} dB`;
+    }
+
+    renderGridTable(frame);
+
+    if (activeTab === 'tab-grid') {
+      requestAnimationFrame(drawGridHeatmap);
+    }
+  }
+
+  // 5. Correlator Telemetry (Engine 3)
+  function handleCorrelatorUpdate(corr) {
+    if (!corr) return;
+    latestCorrelator = corr;
+
+    if (activeTab === 'tab-correlator') {
+      requestAnimationFrame(drawCorrelatorMatrices);
+      requestAnimationFrame(drawBandpassSpectrum);
+      requestAnimationFrame(drawFringePlot);
+    }
+  }
+
+  // 6. Antenna Health & Mask Telemetry (Engine 0)
+  function handleAntennaMaskUpdate(maskStatus) {
+    if (!maskStatus) return;
+    latestAntennaMask = maskStatus;
+
+    if (rfActiveBadge) {
+      rfActiveBadge.textContent = `${maskStatus.active_antennas} / ${maskStatus.num_antennas || 64}`;
+    }
+    if (rfMaskedBadge) {
+      rfMaskedBadge.textContent = `${maskStatus.masked_antennas} / ${maskStatus.num_antennas || 64}`;
+    }
+    if (rfAutodetectBadge) {
+      rfAutodetectBadge.textContent = maskStatus.auto_detect_enabled ? 'ENABLED' : 'DISABLED';
+    }
+    if (rfBlankingBadge) {
+      rfBlankingBadge.textContent = maskStatus.blank_voltages_enabled ? 'RTX 5090 IN-PLACE' : 'OFF';
+    }
+
+    renderArrayGrid();
+  }
+
+  // ==========================================================================
+  // TAB 1: Astrometric Tracker Logic & Canvas Renderers
+  // ==========================================================================
 
   function updateBeamSelects(beams) {
     const prevLm = lmBeamSelect.value;
@@ -228,14 +550,16 @@
     const ids = beams.length > 0 ? beams.map(b => b.beam_id) : [0];
     ids.forEach(id => {
       const name = beamName(id);
+      const text = `Beam ${id}${name ? ' — ' + name : ''}`;
+
       const optLm = document.createElement('option');
       optLm.value = id;
-      optLm.textContent = `Beam ${id}${name ? ' — ' + name : ''}`;
+      optLm.textContent = text;
       lmBeamSelect.appendChild(optLm);
 
       const optCel = document.createElement('option');
       optCel.value = id;
-      optCel.textContent = `Beam ${id}${name ? ' — ' + name : ''}`;
+      optCel.textContent = text;
       celBeamSelect.appendChild(optCel);
     });
 
@@ -244,8 +568,9 @@
   }
 
   function renderBeamTable(beams) {
+    if (!beamTableBody) return;
     if (!beams || beams.length === 0) {
-      beamTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active beams</td></tr>';
+      beamTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active tracked beams</td></tr>';
       return;
     }
 
@@ -255,18 +580,33 @@
       if (b.beam_id === selectedBeamId) tr.classList.add('selected');
 
       const color = BEAM_COLORS[b.beam_id % BEAM_COLORS.length];
+      const name = beamName(b.beam_id);
+
       const targetStr = b.celestial_target && b.celestial_target.is_set
         ? `${b.celestial_target.ra_deg.toFixed(2)}°, ${b.celestial_target.dec_deg.toFixed(2)}°`
         : 'Direction cosines';
 
-      const name = beamName(b.beam_id);
+      // Alt/Az calculation from (l, m)
+      const r = Math.sqrt(b.l0 * b.l0 + b.m0 * b.m0);
+      const altDeg = (90.0 - Math.asin(Math.min(1.0, r)) * 180.0 / Math.PI).toFixed(1);
+      const azDeg = ((Math.atan2(b.l0, b.m0) * 180.0 / Math.PI + 360.0) % 360.0).toFixed(1);
+
+      // Peak dB from latest spectrometer if available
+      let peakDb = '--';
+      if (latestSpectrometer && latestSpectrometer.beams && latestSpectrometer.beams[b.beam_id]) {
+        const spec = latestSpectrometer.beams[b.beam_id];
+        if (spec.stats && spec.stats.max !== undefined) {
+          peakDb = `${spec.stats.max.toFixed(1)} dB`;
+        }
+      }
+
       tr.innerHTML = `
-        <td style="color: ${color}; font-weight: bold;">● Beam ${b.beam_id}${name ? ` — ${name}` : ''}</td>
-        <td>${b.l0.toFixed(4)}</td>
-        <td>${b.m0.toFixed(4)}</td>
-        <td>${b.n0.toFixed(4)}</td>
-        <td>${b.grid_index}</td>
+        <td style="color: ${color}; font-weight: 700;">● Beam ${b.beam_id}</td>
+        <td>${name ? `<strong>${name}</strong>` : '<span class="status-label">Manual</span>'}</td>
+        <td>(${b.l0.toFixed(4)}, ${b.m0.toFixed(4)})</td>
         <td>${targetStr}</td>
+        <td>${altDeg}°, ${azDeg}°</td>
+        <td><span class="monospace highlight">${peakDb}</span></td>
       `;
 
       tr.addEventListener('click', () => selectBeam(b.beam_id));
@@ -276,8 +616,10 @@
 
   async function selectBeam(beamId) {
     selectedBeamId = beamId;
-    lmBeamSelect.value = beamId;
-    celBeamSelect.value = beamId;
+    if (lmBeamSelect) lmBeamSelect.value = beamId;
+    if (celBeamSelect) celBeamSelect.value = beamId;
+    if (waterfallBeamSelect) waterfallBeamSelect.value = beamId;
+    waterfallBeamId = beamId;
 
     if (currentStatus && currentStatus.beams) {
       const b = currentStatus.beams.find(x => x.beam_id === beamId);
@@ -291,136 +633,95 @@
       }
     }
 
-    // Fetch history trail
     try {
       const res = await fetch(`/api/history?beam_id=${beamId}`);
       if (res.ok) {
         beamTrails[beamId] = await res.json();
       }
     } catch (e) {
-      console.error('Failed to fetch beam history', e);
+      // Trail error ignored
     }
 
     renderBeamTable(currentStatus ? currentStatus.beams : []);
     requestAnimationFrame(drawSkyMap);
   }
 
-  function renderAntennaGrid(activeElements) {
-    const activeSet = new Set(activeElements || []);
-    let maxElem = 31;
-    if (activeElements && activeElements.length > 0) {
-      maxElem = Math.max(maxElem, Math.max(...activeElements));
-    }
-    // Round up to multiple of 8
-    maxElem = Math.max(31, Math.ceil((maxElem + 1) / 8) * 8 - 1);
-
-    antennaGrid.innerHTML = '';
-    for (let id = 0; id <= maxElem; id++) {
-      const cell = document.createElement('div');
-      const isActive = activeSet.has(id);
-      cell.className = `antenna-cell ${isActive ? 'active' : ''}`;
-      cell.textContent = id;
-      cell.title = `Antenna ${id}: ${isActive ? 'Active' : 'Masked'}`;
-
-      cell.addEventListener('click', async () => {
-        try {
-          const res = await fetch('/api/antennas/mask', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ antenna_id: id, enabled: !isActive })
-          });
-          const reply = await res.json();
-          if (res.ok) {
-            showToast(reply.message || `Antenna ${id} updated`);
-          } else {
-            showToast(reply.detail || 'Failed to toggle antenna', true);
-          }
-        } catch (err) {
-          showToast(err.message, true);
-        }
-      });
-
-      antennaGrid.appendChild(cell);
-    }
-  }
-
-  // --- Canvas Sky Map ---
-
+  // --- Canvas: Topocentric Sky Map ---
   function drawSkyMap() {
-    if (document.hidden || currentViewMode !== 'overview') return;
-    const w = canvas.width;
-    const h = canvas.height;
+    if (!skyCanvas || !skyCtx) return;
+    const w = skyCanvas.width;
+    const h = skyCanvas.height;
     const cx = w / 2;
     const cy = h / 2;
-    const r = (w / 2) - 34; // Radius of horizon unit circle
+    const r = (w / 2) - 34;
 
-    ctx.clearRect(0, 0, w, h);
+    skyCtx.clearRect(0, 0, w, h);
 
-    // Horizon circle (r = 1)
-    ctx.strokeStyle = '#243447';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
+    // Outer Horizon Circle (r = 1.0)
+    skyCtx.strokeStyle = '#22324e';
+    skyCtx.lineWidth = 2;
+    skyCtx.beginPath();
+    skyCtx.arc(cx, cy, r, 0, Math.PI * 2);
+    skyCtx.stroke();
 
-    // 30° zenith angle (r * sin(30°) = 0.5 * r)
-    ctx.strokeStyle = '#1e2b3c';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
-    ctx.stroke();
+    // 30° zenith angle circle (r * 0.5)
+    skyCtx.strokeStyle = '#152034';
+    skyCtx.lineWidth = 1;
+    skyCtx.setLineDash([4, 4]);
+    skyCtx.beginPath();
+    skyCtx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+    skyCtx.stroke();
 
-    // 60° zenith angle (r * sin(60°) = 0.866 * r)
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * Math.sin(Math.PI / 3), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    // 60° zenith angle circle (r * sin(60°))
+    skyCtx.beginPath();
+    skyCtx.arc(cx, cy, r * Math.sin(Math.PI / 3), 0, Math.PI * 2);
+    skyCtx.stroke();
+    skyCtx.setLineDash([]);
 
-    // Cross axes: l (East/West), m (North/South)
-    ctx.strokeStyle = '#1a2636';
-    ctx.beginPath();
-    ctx.moveTo(cx - r, cy);
-    ctx.lineTo(cx + r, cy);
-    ctx.moveTo(cx, cy - r);
-    ctx.lineTo(cx, cy + r);
-    ctx.stroke();
+    // Cross axes
+    skyCtx.strokeStyle = '#18243a';
+    skyCtx.beginPath();
+    skyCtx.moveTo(cx - r, cy);
+    skyCtx.lineTo(cx + r, cy);
+    skyCtx.moveTo(cx, cy - r);
+    skyCtx.lineTo(cx, cy + r);
+    skyCtx.stroke();
 
-    // Axis Labels
-    ctx.fillStyle = '#8ba2b9';
-    ctx.font = '11px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('N (+m)', cx, cy - r - 16);
-    ctx.fillText('S (-m)', cx, cy + r + 16);
-    ctx.fillText('E (+l)', cx + r + 20, cy);
-    ctx.fillText('W (-l)', cx - r - 20, cy);
-    ctx.fillText('30°', cx + r * 0.5, cy - 8);
-    ctx.fillText('60°', cx + r * Math.sin(Math.PI / 3), cy - 8);
+    // Cardinal Labels
+    skyCtx.fillStyle = '#8fa5c2';
+    skyCtx.font = '11px ui-monospace, monospace';
+    skyCtx.textAlign = 'center';
+    skyCtx.textBaseline = 'middle';
+    skyCtx.fillText('N (+m)', cx, cy - r - 16);
+    skyCtx.fillText('S (-m)', cx, cy + r + 16);
+    skyCtx.fillText('E (+l)', cx + r + 20, cy);
+    skyCtx.fillText('W (-l)', cx - r - 20, cy);
+    skyCtx.fillText('30°', cx + r * 0.5, cy - 8);
+    skyCtx.fillText('60°', cx + r * Math.sin(Math.PI / 3), cy - 8);
 
     // Center Zenith dot
-    ctx.fillStyle = '#3b4d63';
-    ctx.beginPath();
-    ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
-    ctx.fill();
+    skyCtx.fillStyle = '#3b82f6';
+    skyCtx.beginPath();
+    skyCtx.arc(cx, cy, 3, 0, Math.PI * 2);
+    skyCtx.fill();
 
     // Selected beam trail
     const trail = beamTrails[selectedBeamId];
     if (trail && trail.length > 1) {
-      ctx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
+      skyCtx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
+      skyCtx.lineWidth = 1.8;
+      skyCtx.beginPath();
       for (let i = 0; i < trail.length; i++) {
         const pt = trail[i];
         const tx = cx + pt.l0 * r;
         const ty = cy - pt.m0 * r;
-        if (i === 0) ctx.moveTo(tx, ty);
-        else ctx.lineTo(tx, ty);
+        if (i === 0) skyCtx.moveTo(tx, ty);
+        else skyCtx.lineTo(tx, ty);
       }
-      ctx.stroke();
+      skyCtx.stroke();
     }
 
-    // Active beams
+    // Active Beams
     if (currentStatus && currentStatus.beams) {
       currentStatus.beams.forEach(b => {
         const bx = cx + b.l0 * r;
@@ -430,220 +731,44 @@
 
         // Selection ring
         if (isSelected) {
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(bx, by, 9, 0, Math.PI * 2);
-          ctx.stroke();
+          skyCtx.strokeStyle = '#ffffff';
+          skyCtx.lineWidth = 2;
+          skyCtx.beginPath();
+          skyCtx.arc(bx, by, 10, 0, Math.PI * 2);
+          skyCtx.stroke();
         }
 
         // Beam dot
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(bx, by, 5, 0, Math.PI * 2);
-        ctx.fill();
+        skyCtx.fillStyle = color;
+        skyCtx.beginPath();
+        skyCtx.arc(bx, by, 5.5, 0, Math.PI * 2);
+        skyCtx.fill();
 
         // Label
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 11px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillText(`B${b.beam_id}`, bx + 8, by - 6);
+        skyCtx.fillStyle = '#ffffff';
+        skyCtx.font = 'bold 11px ui-monospace, monospace';
+        skyCtx.textAlign = 'left';
+        skyCtx.fillText(`B${b.beam_id}`, bx + 9, by - 6);
 
-        // Routine target name
         const name = beamName(b.beam_id);
         if (name) {
-          ctx.fillStyle = '#9fb3c8';
-          ctx.font = '10px monospace';
-          ctx.fillText(name, bx + 8, by + 10);
+          skyCtx.fillStyle = '#94a3b8';
+          skyCtx.font = '10px ui-monospace, monospace';
+          skyCtx.fillText(name, bx + 9, by + 10);
         }
       });
     }
   }
 
-  // Canvas Mouse Coordinates
-  canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const r = (canvas.width / 2) - 34;
-
-    const l = (x - cx) / r;
-    const m = (cy - y) / r;
-    cursorCoords.textContent = `l: ${l.toFixed(4)} , m: ${m.toFixed(4)}`;
-  });
-
-  // --- Form & Action Handlers ---
-
-  // Tabs
-  document.getElementById('tab-btn-lm').addEventListener('click', () => {
-    document.getElementById('tab-btn-lm').classList.add('active');
-    document.getElementById('tab-btn-celestial').classList.remove('active');
-    formSteerLm.classList.add('active');
-    formSteerCel.classList.remove('active');
-  });
-
-  document.getElementById('tab-btn-celestial').addEventListener('click', () => {
-    document.getElementById('tab-btn-celestial').classList.add('active');
-    document.getElementById('tab-btn-lm').classList.remove('active');
-    formSteerCel.classList.add('active');
-    formSteerLm.classList.remove('active');
-  });
-
-  // Steer Direction Cosines
-  formSteerLm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const beamId = parseInt(lmBeamSelect.value, 10);
-    const l0 = parseFloat(document.getElementById('lm-l0').value);
-    const m0 = parseFloat(document.getElementById('lm-m0').value);
-
-    if (isNaN(l0) || isNaN(m0)) {
-      showToast('Please enter valid l0 and m0', true);
-      return;
-    }
-    const r2 = l0 * l0 + m0 * m0;
-    if (r2 > 1.0) {
-      showToast(`Invalid direction: l0² + m0² = ${r2.toFixed(4)} > 1.0`, true);
-      return;
-    }
-
-    const payload = { beam_id: beamId, l0, m0 };
-    const l1 = parseFloat(document.getElementById('lm-l1').value);
-    const m1 = parseFloat(document.getElementById('lm-m1').value);
-    const dl = parseFloat(document.getElementById('lm-dl').value);
-    const dm = parseFloat(document.getElementById('lm-dm').value);
-
-    if (!isNaN(l1)) payload.l1 = l1;
-    if (!isNaN(m1)) payload.m1 = m1;
-    if (!isNaN(dl)) payload.dl = dl;
-    if (!isNaN(dm)) payload.dm = dm;
-
-    try {
-      const res = await fetch(`/api/beams/${beamId}/target`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || `Beam ${beamId} steered`);
-      } else {
-        showToast(data.detail || 'Steer failed', true);
-      }
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
-
-  // Steer Celestial
-  formSteerCel.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const beamId = parseInt(celBeamSelect.value, 10);
-    const ra = parseFloat(document.getElementById('cel-ra').value);
-    const dec = parseFloat(document.getElementById('cel-dec').value);
-
-    if (isNaN(ra) || isNaN(dec) || ra < 0 || ra >= 360 || dec < -90 || dec > 90) {
-      showToast('RA must be [0, 360) and Dec in [-90, 90]', true);
-      return;
-    }
-
-    try {
-      const res = await fetch(`/api/beams/${beamId}/celestial`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ beam_id: beamId, ra_deg: ra, dec_deg: dec })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || `Beam ${beamId} pointed to RA/Dec`);
-      } else {
-        showToast(data.detail || 'Celestial steer failed', true);
-      }
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
-
-  // Num active beams
-  applyBeamsBtn.addEventListener('click', async () => {
-    const val = parseInt(numBeamsSelect.value, 10);
-    if (isNaN(val) || val < 1 || val > 16) {
-      showToast('Active beams must be between 1 and 16', true);
-      return;
-    }
-    try {
-      const res = await fetch('/api/beams/enable', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ num_active_beams: val })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || `Active beams set to ${val}`);
-      } else {
-        showToast(data.detail || 'Failed to set active beams', true);
-      }
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
-
-  // Interpolation toggle
-  interpToggle.addEventListener('change', async () => {
-    const checked = interpToggle.checked;
-    try {
-      const res = await fetch('/api/interpolation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: checked })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || `Interpolation ${checked ? 'enabled' : 'disabled'}`);
-      } else {
-        showToast(data.detail || 'Failed to toggle interpolation', true);
-      }
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
-
-  // --- Spectrometer Logic & Canvas Rendering ---
-
-  function handleSpectrometerUpdate(specData) {
-    if (!specData || !specData.beams) return;
-    latestSpectrometer = specData;
-
-    // Update view dropdown options if beam set changed
-    updateSpectrometerViewSelect(specData.beams);
-
-    // Update legend pills & stats in panel footer
-    renderSpectrometerFooter(specData.beams);
-
-    // Redraw canvas
-    requestAnimationFrame(drawSpectrometer);
-
-    // Update all beams grid
-    if (allBeamsGrid) {
-      allBeamsGrid.updateSpectrometer(specData);
-    }
-  }
-
+  // --- Canvas: 4-Beam 672-Channel Spectrum ---
   function updateSpectrometerViewSelect(beams) {
     if (!specViewSelect) return;
     const currentVal = specViewSelect.value;
     const beamIds = Object.keys(beams).sort((a, b) => parseInt(a) - parseInt(b));
+    const expected = ['all', ...beamIds];
+    const existing = Array.from(specViewSelect.options).map(o => o.value);
 
-    const existingOptions = Array.from(specViewSelect.options).map(o => o.value);
-    const expectedOptions = ['all', ...beamIds];
-
-    const needsRebuild = existingOptions.length !== expectedOptions.length ||
-      !expectedOptions.every((val, i) => existingOptions[i] === val);
-
-    if (needsRebuild) {
+    if (existing.length !== expected.length || !expected.every((val, i) => existing[i] === val)) {
       specViewSelect.innerHTML = '';
       const allOpt = document.createElement('option');
       allOpt.value = 'all';
@@ -658,7 +783,7 @@
         specViewSelect.appendChild(opt);
       });
 
-      if (expectedOptions.includes(currentVal)) {
+      if (expected.includes(currentVal)) {
         specViewSelect.value = currentVal;
       }
     }
@@ -666,18 +791,16 @@
 
   function renderSpectrometerFooter(beams) {
     if (!specLegend || !specStats) return;
-
     specLegend.innerHTML = '';
     specStats.innerHTML = '';
 
     const beamIds = Object.keys(beams).sort((a, b) => parseInt(a) - parseInt(b));
-    let statsTexts = [];
+    const statsTexts = [];
 
     beamIds.forEach(id => {
       const b = beams[id];
       const color = BEAM_COLORS[parseInt(id, 10) % BEAM_COLORS.length];
 
-      // Pill
       const pill = document.createElement('div');
       pill.className = 'spec-pill';
       pill.innerHTML = `
@@ -686,10 +809,9 @@
       `;
       specLegend.appendChild(pill);
 
-      // Stats
       if (b.stats) {
         statsTexts.push(
-          `<span>Beam ${id}: Min <strong>${b.stats.min} dB</strong> | Max <strong>${b.stats.max} dB</strong> | Mean <strong>${b.stats.mean} dB</strong> | Peak <strong>${b.stats.peak_freq_mhz} MHz</strong></span>`
+          `<span>Beam ${id}: Max <strong>${b.stats.max.toFixed(1)} dB</strong> | Mean <strong>${b.stats.mean.toFixed(1)} dB</strong> | Peak <strong>${b.stats.peak_freq_mhz.toFixed(1)} MHz</strong></span>`
         );
       }
     });
@@ -699,21 +821,18 @@
 
   function drawSpectrometer() {
     if (!specCanvas || !specCtx) return;
-    if (document.hidden || currentViewMode !== 'overview') return;
+    const w = specCanvas.width;
+    const h = specCanvas.height;
 
-    const width = specCanvas.width;
-    const height = specCanvas.height;
-
-    // Background matching deep dark Grafana panel from charts32
-    specCtx.fillStyle = '#181b1f';
-    specCtx.fillRect(0, 0, width, height);
+    specCtx.fillStyle = '#05080f';
+    specCtx.fillRect(0, 0, w, h);
 
     if (!latestSpectrometer || !latestSpectrometer.beams) {
-      specCtx.fillStyle = '#8ba2b9';
+      specCtx.fillStyle = '#5a7192';
       specCtx.font = '12px ui-monospace, monospace';
       specCtx.textAlign = 'center';
       specCtx.textBaseline = 'middle';
-      specCtx.fillText('Connecting to output formed beams spectrometer (1 Hz)...', width / 2, height / 2);
+      specCtx.fillText('Awaiting 672-channel line spectrum telemetry (4 Hz)...', w / 2, h / 2);
       return;
     }
 
@@ -721,158 +840,93 @@
     const beamIds = Object.keys(beams).sort((a, b) => parseInt(a) - parseInt(b));
     if (beamIds.length === 0) return;
 
-    // Filter active beams according to view mode
     const activeIds = (specViewMode === 'all')
       ? beamIds
       : (beams[specViewMode] ? [specViewMode] : beamIds);
 
-    // Layout padding
-    const padL = 52;
-    const padR = 18;
-    const padT = 16;
-    const padB = 30;
-    const plotW = width - padL - padR;
-    const plotH = height - padT - padB;
+    const padL = 46;
+    const padR = 16;
+    const padT = 14;
+    const padB = 26;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
 
-    if (plotW <= 0 || plotH <= 0) return;
+    const fMin = 300.0;
+    const fMax = 501.3;
+    const dbMin = -45.0;
+    const dbMax = 10.0;
 
-    // Auto-scale dB range if user has not zoomed
-    let dbMin = specZoom.dbMin;
-    let dbMax = specZoom.dbMax;
-    let fMin = specZoom.fMin;
-    let fMax = specZoom.fMax;
-
-    if (!specZoom.userZoomed) {
-      let dataMin = 100.0;
-      let dataMax = -100.0;
-      activeIds.forEach(id => {
-        const b = beams[id];
-        if (b.stats) {
-          dataMin = Math.min(dataMin, b.stats.min);
-          dataMax = Math.max(dataMax, b.stats.max);
-        }
-      });
-      if (dataMin < dataMax) {
-        dbMin = Math.floor(dataMin / 5) * 5 - 5;
-        dbMax = Math.ceil(dataMax / 5) * 5 + 5;
-        specZoom.dbMin = dbMin;
-        specZoom.dbMax = dbMax;
-      }
-    }
-
-    const xToPx = (f) => padL + ((f - fMin) / (fMax - fMin)) * plotW;
-    const yToPx = (db) => padT + plotH - ((db - dbMin) / (dbMax - dbMin)) * plotH;
-    const pxToX = (px) => fMin + ((px - padL) / plotW) * (fMax - fMin);
-
-    // 1. Grid & Ticks
+    // Grid lines & dB ticks
+    specCtx.strokeStyle = '#121d33';
     specCtx.lineWidth = 1;
-    specCtx.strokeStyle = '#22262e';
-    specCtx.fillStyle = '#8ba2b9';
+    specCtx.fillStyle = '#5a7192';
     specCtx.font = '10px ui-monospace, monospace';
     specCtx.textAlign = 'right';
     specCtx.textBaseline = 'middle';
 
-    // Horizontal Y Grid (Power dB)
-    const dbStep = (dbMax - dbMin) <= 30 ? 5 : 10;
-    const firstDb = Math.ceil(dbMin / dbStep) * dbStep;
-    specCtx.beginPath();
-    for (let db = firstDb; db <= dbMax; db += dbStep) {
-      const y = yToPx(db);
-      if (y >= padT && y <= padT + plotH) {
-        specCtx.moveTo(padL, y);
-        specCtx.lineTo(padL + plotW, y);
-        specCtx.fillText(`${db.toFixed(0)} dB`, padL - 6, y);
-      }
-    }
-    specCtx.stroke();
+    const dbSteps = [-40, -30, -20, -10, 0, 10];
+    dbSteps.forEach(db => {
+      const y = padT + (1.0 - (db - dbMin) / (dbMax - dbMin)) * plotH;
+      specCtx.beginPath();
+      specCtx.moveTo(padL, y);
+      specCtx.lineTo(padL + plotW, y);
+      specCtx.stroke();
+      specCtx.fillText(`${db}`, padL - 6, y);
+    });
 
-    // Vertical X Grid (Frequency MHz)
-    const fSpan = fMax - fMin;
-    const fStep = fSpan <= 50 ? 10 : (fSpan <= 120 ? 25 : 50);
-    const firstF = Math.ceil(fMin / fStep) * fStep;
+    // Frequency grid ticks
     specCtx.textAlign = 'center';
     specCtx.textBaseline = 'top';
+    const fSteps = [300, 350, 400, 450, 500];
+    fSteps.forEach(freq => {
+      const x = padL + ((freq - fMin) / (fMax - fMin)) * plotW;
+      specCtx.beginPath();
+      specCtx.moveTo(x, padT);
+      specCtx.lineTo(x, padT + plotH);
+      specCtx.stroke();
+      specCtx.fillText(`${freq} MHz`, x, padT + plotH + 6);
+    });
+
+    // Subband boundary marker at 400.65 MHz
+    const subbandX = padL + ((400.65 - fMin) / (fMax - fMin)) * plotW;
+    specCtx.strokeStyle = '#00e5ff';
+    specCtx.setLineDash([3, 3]);
     specCtx.beginPath();
-    for (let f = firstF; f <= fMax; f += fStep) {
-      const x = xToPx(f);
-      if (x >= padL && x <= padL + plotW) {
-        specCtx.moveTo(x, padT);
-        specCtx.lineTo(x, padT + plotH);
-        specCtx.fillText(`${f.toFixed(0)}`, x, padT + plotH + 6);
-      }
-    }
+    specCtx.moveTo(subbandX, padT);
+    specCtx.lineTo(subbandX, padT + plotH);
     specCtx.stroke();
+    specCtx.setLineDash([]);
 
-    // Axes border
-    specCtx.strokeStyle = '#2e3846';
-    specCtx.strokeRect(padL, padT, plotW, plotH);
-
-    // Unit labels
-    specCtx.fillStyle = '#64748b';
-    specCtx.textAlign = 'right';
-    specCtx.textBaseline = 'bottom';
-    specCtx.fillText('Power', padL - 6, padT - 2);
-    specCtx.textAlign = 'right';
-    specCtx.textBaseline = 'top';
-    specCtx.fillText('MHz', padL + plotW, padT + plotH + 6);
-
-    // 2. Draw Spectra Lines (Clipped to plot area)
-    specCtx.save();
-    specCtx.beginPath();
-    specCtx.rect(padL, padT, plotW, plotH);
-    specCtx.clip();
-
+    // Draw spectrum lines
     activeIds.forEach(id => {
       const b = beams[id];
-      if (!b.frequencies_mhz || !b.power_db || b.frequencies_mhz.length === 0) return;
+      if (!b.power_db || b.power_db.length === 0) return;
 
+      const numChannels = b.power_db.length;
       const color = BEAM_COLORS[parseInt(id, 10) % BEAM_COLORS.length];
+
       specCtx.strokeStyle = color;
-      specCtx.lineWidth = 1.75;
+      specCtx.lineWidth = 1.5;
       specCtx.beginPath();
 
-      const freqs = b.frequencies_mhz;
-      const powers = b.power_db;
-      let first = true;
+      for (let ch = 0; ch < numChannels; ch++) {
+        const x = padL + (ch / (numChannels - 1)) * plotW;
+        const db = Math.max(dbMin, Math.min(dbMax, b.power_db[ch]));
+        const y = padT + (1.0 - (db - dbMin) / (dbMax - dbMin)) * plotH;
 
-      for (let i = 0; i < freqs.length; i++) {
-        const f = freqs[i];
-        if (f < fMin - 2 || f > fMax + 2) continue;
-        const x = xToPx(f);
-        const y = yToPx(powers[i]);
-        if (first) {
-          specCtx.moveTo(x, y);
-          first = false;
-        } else {
-          specCtx.lineTo(x, y);
-        }
+        if (ch === 0) specCtx.moveTo(x, y);
+        else specCtx.lineTo(x, y);
       }
       specCtx.stroke();
     });
 
-    specCtx.restore();
-
-    // 3. Drag-Zoom Selection Box
-    if (specDrag.isDragging) {
-      const x0 = Math.max(padL, Math.min(specDrag.startX, specDrag.currentX));
-      const x1 = Math.min(padL + plotW, Math.max(specDrag.startX, specDrag.currentX));
-      const y0 = Math.max(padT, Math.min(specDrag.startY, specDrag.currentY));
-      const y1 = Math.min(padT + plotH, Math.max(specDrag.startY, specDrag.currentY));
-
-      specCtx.fillStyle = 'rgba(0, 229, 255, 0.12)';
-      specCtx.fillRect(x0, y0, x1 - x0, y1 - y0);
-      specCtx.strokeStyle = 'rgba(0, 229, 255, 0.75)';
-      specCtx.lineWidth = 1;
-      specCtx.setLineDash([4, 3]);
-      specCtx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-      specCtx.setLineDash([]);
-    }
-
-    // 4. Hover Crosshair & Dynamic Readout
+    // Hover crosshair inspection
     if (specHover.active && specHover.x >= padL && specHover.x <= padL + plotW) {
-      const hoverFreq = pxToX(specHover.x);
-      specCtx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-      specCtx.lineWidth = 1;
+      const normX = (specHover.x - padL) / plotW;
+      const chIdx = Math.min(671, Math.max(0, Math.round(normX * 671)));
+      const freqMhz = 300.0 + chIdx * 0.3;
+
+      specCtx.strokeStyle = '#ffffff';
       specCtx.setLineDash([2, 2]);
       specCtx.beginPath();
       specCtx.moveTo(specHover.x, padT);
@@ -880,388 +934,1055 @@
       specCtx.stroke();
       specCtx.setLineDash([]);
 
-      let readoutParts = [`Freq: ${hoverFreq.toFixed(2)} MHz`];
-
+      let readout = `Ch ${chIdx} | ${freqMhz.toFixed(2)} MHz`;
       activeIds.forEach(id => {
         const b = beams[id];
-        if (!b.frequencies_mhz || b.frequencies_mhz.length === 0) return;
-
-        const freqs = b.frequencies_mhz;
-        let bestIdx = 0;
-        let minDiff = 1e9;
-        for (let i = 0; i < freqs.length; i++) {
-          const diff = Math.abs(freqs[i] - hoverFreq);
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestIdx = i;
-          }
+        if (b.power_db && b.power_db[chIdx] !== undefined) {
+          readout += ` | Beam ${id}: ${b.power_db[chIdx].toFixed(1)} dB`;
         }
-
-        const pVal = b.power_db[bestIdx];
-        const color = BEAM_COLORS[parseInt(id, 10) % BEAM_COLORS.length];
-
-        // Draw dot marker on curve
-        const dotX = xToPx(freqs[bestIdx]);
-        const dotY = yToPx(pVal);
-        if (dotY >= padT && dotY <= padT + plotH) {
-          specCtx.fillStyle = color;
-          specCtx.beginPath();
-          specCtx.arc(dotX, dotY, 4, 0, Math.PI * 2);
-          specCtx.fill();
-        }
-
-        readoutParts.push(`<span style="color: ${color}; font-weight: bold;">Beam ${id}: ${pVal.toFixed(1)} dB</span>`);
       });
+      if (specCursorReadout) specCursorReadout.textContent = readout;
+    }
+  }
 
-      if (specCursorReadout) {
-        specCursorReadout.innerHTML = readoutParts.join(' &nbsp;|&nbsp; ');
+  // --- Canvas: Historical Waterfall ---
+  function drawWaterfall() {
+    if (!waterfallCanvas || !waterfallCtx) return;
+    const w = waterfallCanvas.width;
+    const h = waterfallCanvas.height;
+
+    waterfallCtx.fillStyle = '#04070d';
+    waterfallCtx.fillRect(0, 0, w, h);
+
+    if (waterfallHistory.length === 0) {
+      waterfallCtx.fillStyle = '#5a7192';
+      waterfallCtx.font = '11px ui-monospace, monospace';
+      waterfallCtx.textAlign = 'center';
+      waterfallCtx.textBaseline = 'middle';
+      waterfallCtx.fillText(`Waterfall accumulating historical frames for Beam ${waterfallBeamId}...`, w / 2, h / 2);
+      return;
+    }
+
+    const numRows = waterfallHistory.length;
+    const numChannels = 672;
+    const rowH = h / MAX_WATERFALL_ROWS;
+    const colW = w / numChannels;
+
+    const dbMin = -45.0;
+    const dbMax = 15.0;
+
+    for (let r = 0; r < numRows; r++) {
+      const powers = waterfallHistory[r].power;
+      const y = r * rowH;
+
+      for (let c = 0; c < numChannels; c++) {
+        const db = powers[c];
+        const norm = (db - dbMin) / (dbMax - dbMin);
+        const rgb = viridisColor(norm);
+
+        waterfallCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        waterfallCtx.fillRect(c * colW, y, Math.ceil(colW) + 0.5, Math.ceil(rowH) + 0.5);
       }
     }
   }
 
-  // --- Spectrometer Interactivity & Mouse Events ---
-  if (specCanvas) {
-    specCanvas.addEventListener('mousemove', (e) => {
-      const rect = specCanvas.getBoundingClientRect();
-      const scaleX = specCanvas.width / rect.width;
-      const scaleY = specCanvas.height / rect.height;
-      const x = (e.clientX - rect.left) * scaleX;
-      const y = (e.clientY - rect.top) * scaleY;
+  // ==========================================================================
+  // TAB 2: 16-Beam 2D Sky Grid Camera Logic & Renderers (F4.3)
+  // ==========================================================================
 
-      specHover = { active: true, x, y };
-
-      if (specDrag.isDragging) {
-        specDrag.currentX = x;
-        specDrag.currentY = y;
-      }
-
-      drawSpectrometer();
-    });
-
-    specCanvas.addEventListener('mouseleave', () => {
-      specHover.active = false;
-      if (specDrag.isDragging) {
-        specDrag.isDragging = false;
-      }
-      if (specCursorReadout) {
-        specCursorReadout.textContent = 'Hover cursor on chart to inspect frequency and beam power';
-      }
-      drawSpectrometer();
-    });
-
-    specCanvas.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return; // Left click only
-      const rect = specCanvas.getBoundingClientRect();
-      const scaleX = specCanvas.width / rect.width;
-      const scaleY = specCanvas.height / rect.height;
-      const x = (e.clientX - rect.left) * scaleX;
-      const y = (e.clientY - rect.top) * scaleY;
-
-      // Only drag if inside plot area
-      if (x >= 52 && x <= specCanvas.width - 18 && y >= 16 && y <= specCanvas.height - 30) {
-        specDrag = { isDragging: true, startX: x, startY: y, currentX: x, currentY: y };
-      }
-    });
-
-    specCanvas.addEventListener('mouseup', (e) => {
-      if (!specDrag.isDragging) return;
-      specDrag.isDragging = false;
-
-      const padL = 52;
-      const padR = 18;
-      const padT = 16;
-      const padB = 30;
-      const plotW = specCanvas.width - padL - padR;
-      const plotH = specCanvas.height - padT - padB;
-
-      const x0 = Math.min(specDrag.startX, specDrag.currentX);
-      const x1 = Math.max(specDrag.startX, specDrag.currentX);
-      const y0 = Math.min(specDrag.startY, specDrag.currentY);
-      const y1 = Math.max(specDrag.startY, specDrag.currentY);
-
-      if (x1 - x0 > 15 && y1 - y0 > 15) {
-        // Calculate new zoom ranges
-        const f0 = specZoom.fMin + ((x0 - padL) / plotW) * (specZoom.fMax - specZoom.fMin);
-        const f1 = specZoom.fMin + ((x1 - padL) / plotW) * (specZoom.fMax - specZoom.fMin);
-        const db1 = specZoom.dbMin + ((padT + plotH - y0) / plotH) * (specZoom.dbMax - specZoom.dbMin);
-        const db0 = specZoom.dbMin + ((padT + plotH - y1) / plotH) * (specZoom.dbMax - specZoom.dbMin);
-
-        specZoom.fMin = Math.max(295.0, Math.min(f0, f1));
-        specZoom.fMax = Math.min(505.0, Math.max(f0, f1));
-        specZoom.dbMin = Math.min(db0, db1);
-        specZoom.dbMax = Math.max(db0, db1);
-        specZoom.userZoomed = true;
-      }
-      drawSpectrometer();
-    });
-
-    specCanvas.addEventListener('dblclick', () => {
-      resetSpectrometerZoom();
-    });
-  }
-
-  function resetSpectrometerZoom() {
-    specZoom = { fMin: 300.0, fMax: 501.3, dbMin: -45.0, dbMax: 10.0, userZoomed: false };
-    drawSpectrometer();
-  }
-
-  if (specResetZoomBtn) {
-    specResetZoomBtn.addEventListener('click', () => {
-      resetSpectrometerZoom();
-    });
-  }
-
-  if (specViewSelect) {
-    specViewSelect.addEventListener('change', (e) => {
-      specViewMode = e.target.value;
-      drawSpectrometer();
-    });
-  }
-
-  // --- All Beams Multi-Square Grid Renderer ---
-
-  class AllBeamsGridRenderer {
-    constructor(containerEl, onSelectBeam) {
-      this.container = containerEl;
-      this.onSelectBeam = onSelectBeam;
-      this.tiles = new Map();
-      this.latestStatus = null;
-      this.latestSpec = null;
-      this.trails = new Map();
-      this.rafId = null;
+  function getSlicedBeamPowers(frame) {
+    if (!frame || !frame.beam_power_spectra || frame.beam_power_spectra.length !== 16) {
+      return frame ? (frame.beam_powers || []) : [];
     }
 
-    ensureTile(beamId) {
-      if (this.tiles.has(beamId)) return this.tiles.get(beamId);
+    if (gridSliceMode === 'full') {
+      return frame.beam_powers || [];
+    }
+
+    const chStart = gridSliceMode === 'sub0' ? 0 : 336;
+    const chEnd = gridSliceMode === 'sub0' ? 336 : 672;
+    const powers = [];
+
+    for (let b = 0; b < 16; b++) {
+      const spec = frame.beam_power_spectra[b];
+      let sumLin = 0;
+      for (let ch = chStart; ch < chEnd; ch++) {
+        sumLin += Math.pow(10, spec[ch] / 10.0);
+      }
+      const meanLin = sumLin / (chEnd - chStart);
+      powers.push(10.0 * Math.log10(Math.max(1e-12, meanLin)));
+    }
+    return powers;
+  }
+
+  function renderGridTable(frame) {
+    if (!gridBeamTbody) return;
+    const powers = getSlicedBeamPowers(frame);
+    if (!powers || powers.length === 0) {
+      gridBeamTbody.innerHTML = '<tr><td colspan="6" class="empty-state">No grid camera telemetry</td></tr>';
+      return;
+    }
+
+    let minDb = 100;
+    let maxDb = -100;
+    powers.forEach(p => {
+      if (p < minDb) minDb = p;
+      if (p > maxDb) maxDb = p;
+    });
+
+    gridBeamTbody.innerHTML = '';
+    const peakId = powers.indexOf(maxDb);
+
+    for (let b = 0; b < 16; b++) {
+      const row = Math.floor(b / 4);
+      const col = b % 4;
+      const l = (-0.03 + col * 0.02).toFixed(4);
+      const m = (-0.03 + row * 0.02).toFixed(4);
+      const db = powers[b].toFixed(1);
+
+      const relPct = Math.max(0, Math.min(100, ((powers[b] - minDb) / (maxDb - minDb + 1e-6)) * 100)).toFixed(0);
+      const isPeak = (b === peakId);
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="color: ${BEAM_COLORS[b % BEAM_COLORS.length]}; font-weight: 700;">Beam ${b}</td>
+        <td>R${row} / C${col}</td>
+        <td>(${l}, ${m})</td>
+        <td><span class="monospace ${isPeak ? 'highlight' : ''}">${db} dB</span></td>
+        <td>
+          <div class="power-bar-wrap">
+            <div class="power-bar-fill" style="width: ${relPct}%;"></div>
+            <span class="monospace" style="font-size: 10px;">${relPct}%</span>
+          </div>
+        </td>
+        <td>${isPeak ? '<span class="badge badge-accent">★ PEAK BEAM</span>' : '<span class="status-label">Aperture</span>'}</td>
+      `;
+      gridBeamTbody.appendChild(tr);
+    }
+  }
+
+  function drawGridHeatmap() {
+    if (!gridCanvas || !gridCtx) return;
+    const w = gridCanvas.width;
+    const h = gridCanvas.height;
+
+    gridCtx.fillStyle = '#060a14';
+    gridCtx.fillRect(0, 0, w, h);
+
+    if (!latestGrid) {
+      gridCtx.fillStyle = '#5a7192';
+      gridCtx.font = '12px ui-monospace, monospace';
+      gridCtx.textAlign = 'center';
+      gridCtx.textBaseline = 'middle';
+      gridCtx.fillText('Awaiting 16-beam sky grid camera frames (4 Hz)...', w / 2, h / 2);
+      return;
+    }
+
+    const powers = getSlicedBeamPowers(latestGrid);
+    if (!powers || powers.length !== 16) return;
+
+    let minDb = 100;
+    let maxDb = -100;
+    powers.forEach(p => {
+      if (p < minDb) minDb = p;
+      if (p > maxDb) maxDb = p;
+    });
+
+    if (gridCbMin) gridCbMin.textContent = `${minDb.toFixed(1)} dB`;
+    if (gridCbMax) gridCbMax.textContent = `${maxDb.toFixed(1)} dB`;
+
+    const pad = 40;
+    const plotW = w - pad * 2;
+    const plotH = h - pad * 2;
+
+    if (gridDisplayMode === 'cells') {
+      // Crisp 4x4 Cells
+      const cellW = plotW / 4;
+      const cellH = plotH / 4;
+
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          const bIdx = r * 4 + c;
+          const p = powers[bIdx];
+          const norm = (p - minDb) / (maxDb - minDb + 1e-6);
+          const rgb = infernoColor(norm);
+
+          const x = pad + c * cellW;
+          const y = pad + (3 - r) * cellH; // flip row so m increases upward
+
+          gridCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+          gridCtx.fillRect(x, y, cellW - 2, cellH - 2);
+
+          // Cell label
+          gridCtx.fillStyle = norm > 0.6 ? '#000000' : '#ffffff';
+          gridCtx.font = 'bold 11px ui-monospace, monospace';
+          gridCtx.textAlign = 'center';
+          gridCtx.textBaseline = 'middle';
+          gridCtx.fillText(`B${bIdx}`, x + cellW / 2, y + cellH / 2 - 8);
+          gridCtx.font = '10px ui-monospace, monospace';
+          gridCtx.fillText(`${p.toFixed(1)} dB`, x + cellW / 2, y + cellH / 2 + 8);
+        }
+      }
+    } else {
+      // Smooth Contour Heatmap using Bilinear Interpolation
+      const res = 160;
+      const imgData = gridCtx.createImageData(res, res);
+      const data = imgData.data;
+
+      // Map 4x4 array (r, c)
+      const grid4x4 = [];
+      for (let r = 0; r < 4; r++) {
+        grid4x4[r] = [];
+        for (let c = 0; c < 4; c++) {
+          grid4x4[r][c] = powers[r * 4 + c];
+        }
+      }
+
+      for (let py = 0; py < res; py++) {
+        const fy = (res - 1 - py) / (res - 1) * 3; // 0 to 3
+        const r0 = Math.floor(fy);
+        const r1 = Math.min(3, r0 + 1);
+        const ty = fy - r0;
+
+        for (let px = 0; px < res; px++) {
+          const fx = px / (res - 1) * 3; // 0 to 3
+          const c0 = Math.floor(fx);
+          const c1 = Math.min(3, c0 + 1);
+          const tx = fx - c0;
+
+          const top = grid4x4[r0][c0] * (1 - tx) + grid4x4[r0][c1] * tx;
+          const bot = grid4x4[r1][c0] * (1 - tx) + grid4x4[r1][c1] * tx;
+          const val = top * (1 - ty) + bot * ty;
+
+          const norm = (val - minDb) / (maxDb - minDb + 1e-6);
+          const rgb = infernoColor(norm);
+
+          const idx = (py * res + px) * 4;
+          data[idx] = rgb[0];
+          data[idx + 1] = rgb[1];
+          data[idx + 2] = rgb[2];
+          data[idx + 3] = 255;
+        }
+      }
+
+      // Draw interpolated bitmap onto canvas
+      const offscreen = document.createElement('canvas');
+      offscreen.width = res;
+      offscreen.height = res;
+      offscreen.getContext('2d').putImageData(imgData, 0, 0);
+
+      gridCtx.imageSmoothingEnabled = true;
+      gridCtx.drawImage(offscreen, pad, pad, plotW, plotH);
+
+      // Overlay Beam Center Marks
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          const bIdx = r * 4 + c;
+          const bx = pad + (c / 3) * plotW;
+          const by = pad + ((3 - r) / 3) * plotH;
+
+          gridCtx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          gridCtx.beginPath();
+          gridCtx.arc(bx, by, 3, 0, Math.PI * 2);
+          gridCtx.fill();
+
+          gridCtx.fillStyle = '#ffffff';
+          gridCtx.font = '10px ui-monospace, monospace';
+          gridCtx.textAlign = 'center';
+          gridCtx.fillText(`B${bIdx}`, bx, by - 6);
+        }
+      }
+    }
+
+    // Grid Outer Box & Coordinate Labels
+    gridCtx.strokeStyle = '#22324e';
+    gridCtx.lineWidth = 1.5;
+    gridCtx.strokeRect(pad, pad, plotW, plotH);
+
+    gridCtx.fillStyle = '#8fa5c2';
+    gridCtx.font = '10px ui-monospace, monospace';
+    gridCtx.textAlign = 'center';
+    gridCtx.textBaseline = 'top';
+    const lLabels = [-0.03, -0.01, 0.01, 0.03];
+    lLabels.forEach((l, i) => {
+      const x = pad + (i / 3) * plotW;
+      gridCtx.fillText(`l=${l.toFixed(2)}`, x, pad + plotH + 8);
+    });
+
+    gridCtx.textAlign = 'right';
+    gridCtx.textBaseline = 'middle';
+    lLabels.forEach((m, i) => {
+      const y = pad + ((3 - i) / 3) * plotH;
+      gridCtx.fillText(`m=${m.toFixed(2)}`, pad - 6, y);
+    });
+
+    // Peak Beam Gold Halo
+    const peakId = powers.indexOf(maxDb);
+    const pRow = Math.floor(peakId / 4);
+    const pCol = peakId % 4;
+    const px = pad + (pCol / 3) * plotW;
+    const py = pad + ((3 - pRow) / 3) * plotH;
+
+    gridCtx.strokeStyle = '#fbbf24';
+    gridCtx.lineWidth = 2.5;
+    gridCtx.beginPath();
+    gridCtx.arc(px, py, 16, 0, Math.PI * 2);
+    gridCtx.stroke();
+
+    // Transient Centroid Marker (Crosshair & Glow Ring)
+    let centL = latestGrid.centroid_l !== undefined ? latestGrid.centroid_l : 0.0;
+    let centM = latestGrid.centroid_m !== undefined ? latestGrid.centroid_m : 0.0;
+
+    // Recalculate centroid dynamically if sliced
+    if (gridSliceMode !== 'full') {
+      let sumWeight = 0;
+      let sumL = 0;
+      let sumM = 0;
+      for (let b = 0; b < 16; b++) {
+        const lin = Math.pow(10, powers[b] / 10.0);
+        const l = -0.03 + (b % 4) * 0.02;
+        const m = -0.03 + Math.floor(b / 4) * 0.02;
+        sumWeight += lin;
+        sumL += lin * l;
+        sumM += lin * m;
+      }
+      if (sumWeight > 0) {
+        centL = sumL / sumWeight;
+        centM = sumM / sumWeight;
+      }
+    }
+
+    const normCentL = Math.max(0, Math.min(1, (centL - (-0.03)) / 0.06));
+    const normCentM = Math.max(0, Math.min(1, (centM - (-0.03)) / 0.06));
+    const cx = pad + normCentL * plotW;
+    const cy = pad + (1 - normCentM) * plotH;
+
+    gridCtx.strokeStyle = '#00e5ff';
+    gridCtx.lineWidth = 2;
+    gridCtx.beginPath();
+    gridCtx.arc(cx, cy, 10, 0, Math.PI * 2);
+    gridCtx.stroke();
+
+    gridCtx.beginPath();
+    gridCtx.moveTo(cx - 15, cy);
+    gridCtx.lineTo(cx + 15, cy);
+    gridCtx.moveTo(cx, cy - 15);
+    gridCtx.lineTo(cx, cy + 15);
+    gridCtx.stroke();
+  }
+
+  // ==========================================================================
+  // TAB 3: Astron WMMA Correlator Logic & Renderers (F4.4)
+  // ==========================================================================
+
+  function drawCorrelatorMatrices() {
+    if (!latestCorrelator) return;
+    drawAmplitudeMatrix();
+    drawPhaseMatrix();
+  }
+
+  function drawAmplitudeMatrix() {
+    if (!corrAmpCanvas || !corrAmpCtx || !latestCorrelator) return;
+    const w = corrAmpCanvas.width;
+    const h = corrAmpCanvas.height;
+
+    corrAmpCtx.fillStyle = '#060a14';
+    corrAmpCtx.fillRect(0, 0, w, h);
+
+    const matrix = latestCorrelator.amplitude_matrix;
+    if (!matrix || matrix.length !== 64) {
+      corrAmpCtx.fillStyle = '#5a7192';
+      corrAmpCtx.font = '11px ui-monospace, monospace';
+      corrAmpCtx.textAlign = 'center';
+      corrAmpCtx.fillText('Loading 64x64 amplitude matrix...', w / 2, h / 2);
+      return;
+    }
+
+    const pad = 30;
+    const plotW = w - pad * 2;
+    const plotH = h - pad * 2;
+
+    // Find max amp
+    let maxAmp = 0.001;
+    for (let i = 0; i < 64; i++) {
+      for (let j = 0; j < 64; j++) {
+        if (matrix[i][j] > maxAmp) maxAmp = matrix[i][j];
+      }
+    }
+    if (corrAmpCbMax) corrAmpCbMax.textContent = maxAmp.toFixed(1);
+
+    const cellW = plotW / 64;
+    const cellH = plotH / 64;
+
+    for (let i = 0; i < 64; i++) {
+      for (let j = 0; j < 64; j++) {
+        const norm = matrix[i][j] / maxAmp;
+        const rgb = turboColor(norm);
+
+        corrAmpCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        corrAmpCtx.fillRect(pad + j * cellW, pad + i * cellH, cellW + 0.5, cellH + 0.5);
+      }
+    }
+
+    // Axes Ticks: 0, 8, 16, 24, 32, 40, 48, 56, 63
+    corrAmpCtx.strokeStyle = '#22324e';
+    corrAmpCtx.strokeRect(pad, pad, plotW, plotH);
+
+    corrAmpCtx.fillStyle = '#8fa5c2';
+    corrAmpCtx.font = '9px ui-monospace, monospace';
+    const ticks = [0, 8, 16, 24, 32, 40, 48, 56, 63];
+
+    corrAmpCtx.textAlign = 'center';
+    ticks.forEach(t => {
+      const x = pad + (t / 63) * plotW;
+      corrAmpCtx.fillText(`${t}`, x, pad + plotH + 10);
+    });
+
+    corrAmpCtx.textAlign = 'right';
+    corrAmpCtx.textBaseline = 'middle';
+    ticks.forEach(t => {
+      const y = pad + (t / 63) * plotH;
+      corrAmpCtx.fillText(`${t}`, pad - 4, y);
+    });
+  }
+
+  function drawPhaseMatrix() {
+    if (!corrPhaseCanvas || !corrPhaseCtx || !latestCorrelator) return;
+    const w = corrPhaseCanvas.width;
+    const h = corrPhaseCanvas.height;
+
+    corrPhaseCtx.fillStyle = '#060a14';
+    corrPhaseCtx.fillRect(0, 0, w, h);
+
+    const matrix = latestCorrelator.phase_matrix;
+    if (!matrix || matrix.length !== 64) {
+      corrPhaseCtx.fillStyle = '#5a7192';
+      corrPhaseCtx.font = '11px ui-monospace, monospace';
+      corrPhaseCtx.textAlign = 'center';
+      corrPhaseCtx.fillText('Loading 64x64 phase matrix...', w / 2, h / 2);
+      return;
+    }
+
+    const pad = 30;
+    const plotW = w - pad * 2;
+    const plotH = h - pad * 2;
+    const cellW = plotW / 64;
+    const cellH = plotH / 64;
+
+    for (let i = 0; i < 64; i++) {
+      for (let j = 0; j < 64; j++) {
+        const rad = matrix[i][j];
+        const rgb = cyclicPhaseColor(rad);
+
+        corrPhaseCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        corrPhaseCtx.fillRect(pad + j * cellW, pad + i * cellH, cellW + 0.5, cellH + 0.5);
+      }
+    }
+
+    corrPhaseCtx.strokeStyle = '#22324e';
+    corrPhaseCtx.strokeRect(pad, pad, plotW, plotH);
+
+    corrPhaseCtx.fillStyle = '#8fa5c2';
+    corrPhaseCtx.font = '9px ui-monospace, monospace';
+    const ticks = [0, 8, 16, 24, 32, 40, 48, 56, 63];
+
+    corrPhaseCtx.textAlign = 'center';
+    ticks.forEach(t => {
+      const x = pad + (t / 63) * plotW;
+      corrPhaseCtx.fillText(`${t}`, x, pad + plotH + 10);
+    });
+
+    corrPhaseCtx.textAlign = 'right';
+    corrPhaseCtx.textBaseline = 'middle';
+    ticks.forEach(t => {
+      const y = pad + (t / 63) * plotH;
+      corrPhaseCtx.fillText(`${t}`, pad - 4, y);
+    });
+  }
+
+  function drawBandpassSpectrum() {
+    if (!corrBandpassCanvas || !corrBandpassCtx || !latestCorrelator) return;
+    const w = corrBandpassCanvas.width;
+    const h = corrBandpassCanvas.height;
+
+    corrBandpassCtx.fillStyle = '#05080f';
+    corrBandpassCtx.fillRect(0, 0, w, h);
+
+    const bp = latestCorrelator.bandpass_db;
+    if (!bp || bp.length !== 672) {
+      corrBandpassCtx.fillStyle = '#5a7192';
+      corrBandpassCtx.font = '11px ui-monospace, monospace';
+      corrBandpassCtx.textAlign = 'center';
+      corrBandpassCtx.fillText('Loading 672-ch bandpass spectrum...', w / 2, h / 2);
+      return;
+    }
+
+    const padL = 46;
+    const padR = 16;
+    const padT = 14;
+    const padB = 26;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    let minDb = 100;
+    let maxDb = -100;
+    bp.forEach(p => {
+      if (p < minDb) minDb = p;
+      if (p > maxDb) maxDb = p;
+    });
+    minDb = Math.min(-10.0, Math.floor(minDb / 5) * 5);
+    maxDb = Math.max(15.0, Math.ceil(maxDb / 5) * 5);
+
+    // Grid ticks
+    corrBandpassCtx.strokeStyle = '#121d33';
+    corrBandpassCtx.lineWidth = 1;
+    corrBandpassCtx.fillStyle = '#5a7192';
+    corrBandpassCtx.font = '10px ui-monospace, monospace';
+
+    const fSteps = [300, 350, 400, 450, 500];
+    fSteps.forEach(freq => {
+      const x = padL + ((freq - 300) / 201.3) * plotW;
+      corrBandpassCtx.beginPath();
+      corrBandpassCtx.moveTo(x, padT);
+      corrBandpassCtx.lineTo(x, padT + plotH);
+      corrBandpassCtx.stroke();
+      corrBandpassCtx.fillText(`${freq} MHz`, x, padT + plotH + 8);
+    });
+
+    // Subband boundary marker at 400.65 MHz
+    const subbandX = padL + ((400.65 - 300) / 201.3) * plotW;
+    corrBandpassCtx.strokeStyle = '#00e5ff';
+    corrBandpassCtx.setLineDash([3, 3]);
+    corrBandpassCtx.beginPath();
+    corrBandpassCtx.moveTo(subbandX, padT);
+    corrBandpassCtx.lineTo(subbandX, padT + plotH);
+    corrBandpassCtx.stroke();
+    corrBandpassCtx.setLineDash([]);
+
+    // Curve
+    corrBandpassCtx.strokeStyle = '#10b981';
+    corrBandpassCtx.lineWidth = 1.8;
+    corrBandpassCtx.beginPath();
+
+    for (let ch = 0; ch < 672; ch++) {
+      const x = padL + (ch / 671) * plotW;
+      const y = padT + (1.0 - (bp[ch] - minDb) / (maxDb - minDb)) * plotH;
+      if (ch === 0) corrBandpassCtx.moveTo(x, y);
+      else corrBandpassCtx.lineTo(x, y);
+    }
+    corrBandpassCtx.stroke();
+  }
+
+  function drawFringePlot() {
+    if (!fringeCanvas || !fringeCtx || !latestCorrelator) return;
+    const w = fringeCanvas.width;
+    const h = fringeCanvas.height;
+
+    fringeCtx.fillStyle = '#05080f';
+    fringeCtx.fillRect(0, 0, w, h);
+
+    const fringes = latestCorrelator.reference_fringes;
+    if (!fringes || !fringes[fringeAntenna]) {
+      fringeCtx.fillStyle = '#5a7192';
+      fringeCtx.font = '11px ui-monospace, monospace';
+      fringeCtx.textAlign = 'center';
+      fringeCtx.fillText(`Awaiting fringe baseline (0, ${fringeAntenna})...`, w / 2, h / 2);
+      return;
+    }
+
+    const fringe = fringes[fringeAntenna];
+    const padL = 46;
+    const padR = 16;
+    const padT = 14;
+    const padB = 26;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // Grid ticks
+    fringeCtx.strokeStyle = '#121d33';
+    fringeCtx.lineWidth = 1;
+    fringeCtx.fillStyle = '#5a7192';
+    fringeCtx.font = '10px ui-monospace, monospace';
+
+    const fSteps = [300, 350, 400, 450, 500];
+    fSteps.forEach(freq => {
+      const x = padL + ((freq - 300) / 201.3) * plotW;
+      fringeCtx.beginPath();
+      fringeCtx.moveTo(x, padT);
+      fringeCtx.lineTo(x, padT + plotH);
+      fringeCtx.stroke();
+      fringeCtx.fillText(`${freq} MHz`, x, padT + plotH + 8);
+    });
+
+    if (fringeMode === 'ri') {
+      // Real (Cyan) & Imag (Amber)
+      let maxAbs = 0.01;
+      for (let ch = 0; ch < 672; ch++) {
+        if (Math.abs(fringe.real[ch]) > maxAbs) maxAbs = Math.abs(fringe.real[ch]);
+        if (Math.abs(fringe.imag[ch]) > maxAbs) maxAbs = Math.abs(fringe.imag[ch]);
+      }
+
+      // Real
+      fringeCtx.strokeStyle = '#00e5ff';
+      fringeCtx.lineWidth = 1.4;
+      fringeCtx.beginPath();
+      for (let ch = 0; ch < 672; ch++) {
+        const x = padL + (ch / 671) * plotW;
+        const y = padT + (0.5 - (fringe.real[ch] / (maxAbs * 2.1))) * plotH;
+        if (ch === 0) fringeCtx.moveTo(x, y);
+        else fringeCtx.lineTo(x, y);
+      }
+      fringeCtx.stroke();
+
+      // Imag
+      fringeCtx.strokeStyle = '#f59e0b';
+      fringeCtx.beginPath();
+      for (let ch = 0; ch < 672; ch++) {
+        const x = padL + (ch / 671) * plotW;
+        const y = padT + (0.5 - (fringe.imag[ch] / (maxAbs * 2.1))) * plotH;
+        if (ch === 0) fringeCtx.moveTo(x, y);
+        else fringeCtx.lineTo(x, y);
+      }
+      fringeCtx.stroke();
+    } else if (fringeMode === 'amp') {
+      // Amplitude
+      let maxAmp = 0.01;
+      for (let ch = 0; ch < 672; ch++) {
+        if (fringe.amplitude[ch] > maxAmp) maxAmp = fringe.amplitude[ch];
+      }
+
+      fringeCtx.strokeStyle = '#10b981';
+      fringeCtx.lineWidth = 1.6;
+      fringeCtx.beginPath();
+      for (let ch = 0; ch < 672; ch++) {
+        const x = padL + (ch / 671) * plotW;
+        const y = padT + (1.0 - (fringe.amplitude[ch] / maxAmp)) * plotH;
+        if (ch === 0) fringeCtx.moveTo(x, y);
+        else fringeCtx.lineTo(x, y);
+      }
+      fringeCtx.stroke();
+    } else if (fringeMode === 'phase') {
+      // Phase (-pi to +pi)
+      fringeCtx.strokeStyle = '#d500f9';
+      fringeCtx.lineWidth = 1.4;
+      fringeCtx.beginPath();
+      for (let ch = 0; ch < 672; ch++) {
+        const x = padL + (ch / 671) * plotW;
+        const y = padT + (1.0 - (fringe.phase_rad[ch] + Math.PI) / (2 * Math.PI)) * plotH;
+        if (ch === 0) fringeCtx.moveTo(x, y);
+        else fringeCtx.lineTo(x, y);
+      }
+      fringeCtx.stroke();
+    }
+  }
+
+  // ==========================================================================
+  // TAB 4: 8x8 Physical Array Health & Masking Logic (F4.5)
+  // ==========================================================================
+
+  function renderArrayGrid() {
+    if (!arrayGrid8x8) return;
+    const antennas = (latestAntennaMask && latestAntennaMask.antennas && latestAntennaMask.antennas.length === 64)
+      ? latestAntennaMask.antennas
+      : null;
+
+    arrayGrid8x8.innerHTML = '';
+
+    for (let id = 0; id < 64; id++) {
+      const item = antennas ? antennas[id] : null;
+      const isEnabled = item ? item.enabled : true;
+      const statusRaw = item ? item.status : 'nominal';
+      const powerRms = item ? item.power_rms.toFixed(2) : '8.10';
+      const clipPct = item ? (item.clip_fraction * 100).toFixed(2) : '0.01';
+      const kurt = item ? item.kurtosis.toFixed(2) : '3.00';
+
+      // Status class mapping
+      let statusClass = 'status-nominal';
+      let tagLabel = 'OK';
+
+      if (!isEnabled || statusRaw === 'manually_masked') {
+        statusClass = 'status-masked';
+        tagLabel = 'MASKED';
+      } else if (statusRaw === 'dead') {
+        statusClass = 'status-dead';
+        tagLabel = 'DEAD';
+      } else if (statusRaw === 'saturated') {
+        statusClass = 'status-saturated';
+        tagLabel = 'SATURATED';
+      } else if (statusRaw === 'high_clip') {
+        statusClass = 'status-high-clip';
+        tagLabel = 'CLIP';
+      }
 
       const card = document.createElement('div');
-      card.className = 'beam-square-card';
+      card.className = `antenna-card ${statusClass}`;
+      card.title = `Antenna ${id}: Click to toggle enable / mask`;
+
       card.innerHTML = `
-        <div class="beam-square-header">
-          <span class="beam-square-title">Beam ${beamId}</span>
-          <span class="beam-square-meta">--</span>
+        <div class="antenna-card-header">
+          <span class="ant-id">#${String(id).padStart(2, '0')}</span>
+          <span class="ant-status-tag">${tagLabel}</span>
         </div>
-        <div class="beam-square-canvases">
-          <canvas class="beam-sky-canvas" width="140" height="140"></canvas>
-          <canvas class="beam-spec-canvas" width="220" height="140"></canvas>
+        <div class="ant-metrics">
+          <div class="ant-metric-row">
+            <span>RMS:</span>
+            <span class="ant-metric-val">${powerRms} dB</span>
+          </div>
+          <div class="ant-metric-row">
+            <span>Clip:</span>
+            <span class="ant-metric-val">${clipPct}%</span>
+          </div>
+          <div class="ant-metric-row">
+            <span>Kurt:</span>
+            <span class="ant-metric-val">${kurt}</span>
+          </div>
         </div>
       `;
-      card.addEventListener('click', () => this.onSelectBeam(beamId));
-      this.container.appendChild(card);
 
-      const skyCanvas = card.querySelector('.beam-sky-canvas');
-      const specCanvas = card.querySelector('.beam-spec-canvas');
-      const tile = {
-        root: card,
-        skyCtx: skyCanvas.getContext('2d', { alpha: false }),
-        specCtx: specCanvas.getContext('2d', { alpha: false }),
-        titleEl: card.querySelector('.beam-square-title'),
-        metaEl: card.querySelector('.beam-square-meta'),
-        lastTitle: '',
-        lastMeta: '',
-      };
-      this.tiles.set(beamId, tile);
-      return tile;
-    }
-
-    setHistoryAll(historyMap) {
-      if (!historyMap) return;
-      for (const [beamIdStr, samples] of Object.entries(historyMap)) {
-        const bId = parseInt(beamIdStr, 10);
-        this.trails.set(bId, samples.map(s => ({ l0: s.l0, m0: s.m0 })));
-      }
-      this.scheduleRender();
-    }
-
-    updateStatus(status) {
-      this.latestStatus = status;
-      if (status && status.beams) {
-        for (const b of status.beams) {
-          if (!this.trails.has(b.beam_id)) {
-            this.trails.set(b.beam_id, []);
+      card.addEventListener('click', async () => {
+        try {
+          const nextState = !isEnabled;
+          const res = await fetch('/api/antennas/mask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ antenna_id: id, enabled: nextState })
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            showToast(`Antenna ${id} ${nextState ? 'unmasked (enabled)' : 'masked'}`);
+            // Optimistic update
+            if (item) item.enabled = nextState;
+            renderArrayGrid();
+          } else {
+            showToast(reply.detail || 'Failed to toggle antenna', true);
           }
-          const trail = this.trails.get(b.beam_id);
-          trail.push({ l0: b.l0, m0: b.m0 });
-          if (trail.length > 120) trail.shift();
+        } catch (err) {
+          showToast(err.message, true);
         }
-      }
-      this.scheduleRender();
-    }
+      });
 
-    updateSpectrometer(specData) {
-      this.latestSpec = specData;
-      this.scheduleRender();
+      arrayGrid8x8.appendChild(card);
     }
+  }
 
-    scheduleRender() {
-      if (document.hidden || currentViewMode !== 'grid' || this.rafId !== null) return;
-      this.rafId = requestAnimationFrame(() => {
-        this.rafId = null;
-        this.renderAll();
+  // ==========================================================================
+  // Form Controls & Interaction Handlers
+  // ==========================================================================
+
+  function initControls() {
+    // Top Tabs
+    initTabRouter();
+
+    // Start Clock
+    startUtcClock();
+
+    // Steering Subtabs
+    if (tabBtnLm && tabBtnCelestial) {
+      tabBtnLm.addEventListener('click', () => {
+        tabBtnLm.classList.add('active');
+        tabBtnCelestial.classList.remove('active');
+        formSteerLm.classList.add('active');
+        formSteerCelestial.classList.remove('active');
+      });
+
+      tabBtnCelestial.addEventListener('click', () => {
+        tabBtnCelestial.classList.add('active');
+        tabBtnLm.classList.remove('active');
+        formSteerCelestial.classList.add('active');
+        formSteerLm.classList.remove('active');
       });
     }
 
-    renderAll() {
-      if (!this.latestStatus || !this.latestStatus.beams) return;
-      const activeCount = this.latestStatus.num_active_beams || 0;
-      const specBeams = this.latestSpec?.beams || {};
+    // Direction Cosines Form
+    if (formSteerLm) {
+      formSteerLm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const beamId = parseInt(lmBeamSelect.value, 10);
+        const l0 = parseFloat(document.getElementById('lm-l0').value);
+        const m0 = parseFloat(document.getElementById('lm-m0').value);
 
-      for (const beam of this.latestStatus.beams) {
-        const id = beam.beam_id;
-        const isActive = id < activeCount;
-        const tile = this.ensureTile(id);
-        tile.root.classList.toggle('inactive', !isActive);
-        tile.root.classList.toggle('selected', id === selectedBeamId);
-
-        const spec = specBeams[id];
-        const rName = beamName(id);
-        const targetName = rName || spec?.target_name || (beam.celestial_target?.is_set ? `RA ${beam.celestial_target.ra_deg?.toFixed(1)}°` : '');
-        const titleText = targetName ? `B${id}: ${targetName}` : `Beam ${id}`;
-        if (tile.lastTitle !== titleText) {
-          tile.titleEl.textContent = titleText;
-          tile.lastTitle = titleText;
+        if (isNaN(l0) || isNaN(m0)) {
+          showToast('Please enter valid direction cosines l0 and m0', true);
+          return;
         }
 
-        const peakDb = spec?.stats?.peak_power_db;
-        const metaText = `l=${beam.l0.toFixed(3)} m=${beam.m0.toFixed(3)}` +
-          (peakDb !== undefined ? ` | ${peakDb.toFixed(1)} dB` : '');
-        if (tile.lastMeta !== metaText) {
-          tile.metaEl.textContent = metaText;
-          tile.lastMeta = metaText;
+        const r2 = l0 * l0 + m0 * m0;
+        if (r2 > 1.0) {
+          showToast(`Invalid direction: l0² + m0² = ${r2.toFixed(4)} > 1.0`, true);
+          return;
         }
 
-        this.drawSkySquare(tile.skyCtx, beam, this.trails.get(id) || []);
-        if (spec && spec.power_db) {
-          this.drawMiniSpectrum(tile.specCtx, spec.power_db);
+        const payload = { beam_id: beamId, l0, m0 };
+        const l1 = parseFloat(document.getElementById('lm-l1').value);
+        const m1 = parseFloat(document.getElementById('lm-m1').value);
+        const dl = parseFloat(document.getElementById('lm-dl').value);
+        const dm = parseFloat(document.getElementById('lm-dm').value);
+
+        if (!isNaN(l1)) payload.l1 = l1;
+        if (!isNaN(m1)) payload.m1 = m1;
+        if (!isNaN(dl)) payload.dl = dl;
+        if (!isNaN(dm)) payload.dm = dm;
+
+        try {
+          const res = await fetch(`/api/beams/${beamId}/target`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            showToast(reply.message || `Beam ${beamId} target applied`);
+          } else {
+            showToast(reply.detail || 'Steer failed', true);
+          }
+        } catch (err) {
+          showToast(err.message, true);
         }
-      }
+      });
     }
 
-    drawSkySquare(ctx, beam, trail) {
-      const w = 140, h = 140, cx = 70, cy = 70, r = 60;
-      ctx.fillStyle = '#0d1117';
-      ctx.fillRect(0, 0, w, h);
-
-      // Horizon circle (l^2 + m^2 = 1) & crosshairs
-      ctx.strokeStyle = '#262c3a';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
-      ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
-      ctx.stroke();
-
-      // Trail path
-      if (trail.length > 1) {
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
-        ctx.beginPath();
-        for (let i = 0; i < trail.length; i++) {
-          const px = cx + trail[i].l0 * r;
-          const py = cy - trail[i].m0 * r;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
+    // Celestial Presets
+    if (celPresetSelect) {
+      celPresetSelect.addEventListener('change', () => {
+        const val = celPresetSelect.value;
+        if (val && CELESTIAL_PRESETS[val]) {
+          document.getElementById('cel-ra').value = CELESTIAL_PRESETS[val].ra;
+          document.getElementById('cel-dec').value = CELESTIAL_PRESETS[val].dec;
         }
-        ctx.stroke();
-      }
-
-      // Current beam position dot
-      const bx = cx + beam.l0 * r;
-      const by = cy - beam.m0 * r;
-      const color = BEAM_COLORS[beam.beam_id % BEAM_COLORS.length] || '#38bdf8';
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(bx, by, 4, 0, Math.PI * 2);
-      ctx.fill();
+      });
     }
 
-    drawMiniSpectrum(ctx, powerDb) {
-      const w = 220, h = 140;
-      ctx.fillStyle = '#0d1117';
-      ctx.fillRect(0, 0, w, h);
+    // Celestial Form
+    if (formSteerCelestial) {
+      formSteerCelestial.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const beamId = parseInt(celBeamSelect.value, 10);
+        const ra = parseFloat(document.getElementById('cel-ra').value);
+        const dec = parseFloat(document.getElementById('cel-dec').value);
 
-      const n = powerDb.length;
-      if (!n) return;
-      const stride = Math.max(1, Math.floor(n / 168));
-      const minDb = -45.0, maxDb = 10.0;
-
-      ctx.strokeStyle = '#34d399';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      let first = true;
-      for (let i = 0; i < n; i += stride) {
-        const x = (i / (n - 1)) * (w - 8) + 4;
-        const norm = Math.max(0, Math.min(1, (powerDb[i] - minDb) / (maxDb - minDb)));
-        const y = h - 6 - norm * (h - 12);
-        if (first) {
-          ctx.moveTo(x, y);
-          first = false;
-        } else {
-          ctx.lineTo(x, y);
+        if (isNaN(ra) || isNaN(dec) || ra < 0 || ra >= 360 || dec < -90 || dec > 90) {
+          showToast('RA must be [0, 360) and Dec in [-90, 90]', true);
+          return;
         }
-      }
-      ctx.stroke();
+
+        try {
+          const res = await fetch(`/api/beams/${beamId}/celestial`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ beam_id: beamId, ra_deg: ra, dec_deg: dec })
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            showToast(reply.message || `Beam ${beamId} pointed to celestial target`);
+          } else {
+            showToast(reply.detail || 'Celestial steer failed', true);
+          }
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
     }
-  }
 
-  function switchViewMode(mode) {
-    currentViewMode = mode;
-    if (mode === 'grid') {
-      if (mapPanel) mapPanel.style.display = 'none';
-      if (specPanel) specPanel.style.display = 'none';
-      if (allBeamsPanel) allBeamsPanel.style.display = 'block';
-      if (btnViewSingle) btnViewSingle.classList.remove('active');
-      if (btnViewGrid) btnViewGrid.classList.add('active');
-
-      if (!historyAllFetched) {
-        historyAllFetched = true;
-        fetch('/api/history/all?limit=120')
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data && allBeamsGrid) allBeamsGrid.setHistoryAll(data);
-          })
-          .catch(() => {});
-      }
-      if (allBeamsGrid) allBeamsGrid.scheduleRender();
-    } else {
-      if (mapPanel) mapPanel.style.display = 'block';
-      if (specPanel) specPanel.style.display = 'block';
-      if (allBeamsPanel) allBeamsPanel.style.display = 'none';
-      if (btnViewSingle) btnViewSingle.classList.add('active');
-      if (btnViewGrid) btnViewGrid.classList.remove('active');
-      requestAnimationFrame(drawSkyMap);
-      requestAnimationFrame(drawSpectrometer);
+    // Config Controls
+    if (applyBeamsBtn) {
+      applyBeamsBtn.addEventListener('click', async () => {
+        const val = parseInt(numBeamsSelect.value, 10);
+        if (isNaN(val) || val < 1 || val > 16) {
+          showToast('Active beams must be between 1 and 16', true);
+          return;
+        }
+        try {
+          const res = await fetch('/api/beams/enable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ num_active_beams: val })
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            showToast(reply.message || `Active beams set to ${val}`);
+          } else {
+            showToast(reply.detail || 'Failed to set active beams', true);
+          }
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
     }
-  }
 
-  if (btnViewSingle) btnViewSingle.addEventListener('click', () => switchViewMode('overview'));
-  if (btnViewGrid) btnViewGrid.addEventListener('click', () => switchViewMode('grid'));
-  if (btnViewSingleGrid) btnViewSingleGrid.addEventListener('click', () => switchViewMode('overview'));
-  if (btnViewGridActive) btnViewGridActive.addEventListener('click', () => switchViewMode('grid'));
+    if (interpToggle) {
+      interpToggle.addEventListener('change', async () => {
+        const enabled = interpToggle.checked;
+        try {
+          const res = await fetch('/api/interpolation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            showToast(reply.message || `Interpolation ${enabled ? 'enabled' : 'disabled'}`);
+          } else {
+            showToast(reply.detail || 'Failed to toggle interpolation', true);
+          }
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
+    }
 
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      if (currentViewMode === 'overview') {
-        requestAnimationFrame(drawSkyMap);
+    // Spectrometer View Select & Reset Zoom
+    if (specViewSelect) {
+      specViewSelect.addEventListener('change', () => {
+        specViewMode = specViewSelect.value;
         requestAnimationFrame(drawSpectrometer);
-      } else if (allBeamsGrid) {
-        allBeamsGrid.scheduleRender();
-      }
+      });
     }
+
+    if (specResetZoomBtn) {
+      specResetZoomBtn.addEventListener('click', () => {
+        specZoom.userZoomed = false;
+        requestAnimationFrame(drawSpectrometer);
+      });
+    }
+
+    if (specCanvas) {
+      specCanvas.addEventListener('mousemove', (e) => {
+        const rect = specCanvas.getBoundingClientRect();
+        specHover.active = true;
+        specHover.x = (e.clientX - rect.left) * (specCanvas.width / rect.width);
+        specHover.y = (e.clientY - rect.top) * (specCanvas.height / rect.height);
+        requestAnimationFrame(drawSpectrometer);
+      });
+
+      specCanvas.addEventListener('mouseleave', () => {
+        specHover.active = false;
+        if (specCursorReadout) {
+          specCursorReadout.textContent = 'Hover cursor on spectrum to inspect frequency & beam power (dB)';
+        }
+        requestAnimationFrame(drawSpectrometer);
+      });
+    }
+
+    // Waterfall Controls
+    if (waterfallBeamSelect) {
+      waterfallBeamSelect.addEventListener('change', () => {
+        waterfallBeamId = parseInt(waterfallBeamSelect.value, 10);
+        waterfallHistory = [];
+        requestAnimationFrame(drawWaterfall);
+      });
+    }
+
+    if (waterfallClearBtn) {
+      waterfallClearBtn.addEventListener('click', () => {
+        waterfallHistory = [];
+        requestAnimationFrame(drawWaterfall);
+      });
+    }
+
+    // Sky Map Cursor Hover
+    if (skyCanvas) {
+      skyCanvas.addEventListener('mousemove', (e) => {
+        const rect = skyCanvas.getBoundingClientRect();
+        const scaleX = skyCanvas.width / rect.width;
+        const scaleY = skyCanvas.height / rect.height;
+        const x = (e.clientX - rect.left) * scaleX;
+        const y = (e.clientY - rect.top) * scaleY;
+        const cx = skyCanvas.width / 2;
+        const cy = skyCanvas.height / 2;
+        const r = (skyCanvas.width / 2) - 34;
+
+        const l = (x - cx) / r;
+        const m = (cy - y) / r;
+
+        const rad = Math.sqrt(l * l + m * m);
+        const altDeg = (90.0 - Math.asin(Math.min(1.0, rad)) * 180.0 / Math.PI).toFixed(1);
+        const azDeg = ((Math.atan2(l, m) * 180.0 / Math.PI + 360.0) % 360.0).toFixed(1);
+
+        if (cursorCoords) {
+          cursorCoords.textContent = `l: ${l.toFixed(4)} , m: ${m.toFixed(4)} | Alt: ${altDeg}° Az: ${azDeg}°`;
+        }
+      });
+    }
+
+    // Grid Slicing Buttons
+    const sliceBtns = document.querySelectorAll('#grid-slice-buttons .btn');
+    sliceBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        sliceBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        gridSliceMode = btn.getAttribute('data-slice');
+        if (latestGrid) {
+          renderGridTable(latestGrid);
+          requestAnimationFrame(drawGridHeatmap);
+        }
+      });
+    });
+
+    // Grid Mode Buttons
+    const modeBtns = document.querySelectorAll('#grid-mode-buttons .btn');
+    modeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        modeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        gridDisplayMode = btn.getAttribute('data-mode');
+        requestAnimationFrame(drawGridHeatmap);
+      });
+    });
+
+    // Fringe Baseline Buttons
+    const fringeBaseBtns = document.querySelectorAll('#fringe-baseline-buttons .btn');
+    fringeBaseBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        fringeBaseBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        fringeAntenna = parseInt(btn.getAttribute('data-ant'), 10);
+        requestAnimationFrame(drawFringePlot);
+      });
+    });
+
+    // Fringe Mode Buttons
+    const fringeModeBtns = document.querySelectorAll('#fringe-mode-buttons .btn');
+    fringeModeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        fringeModeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        fringeMode = btn.getAttribute('data-mode');
+        requestAnimationFrame(drawFringePlot);
+      });
+    });
+
+    // Unmask All Button
+    if (btnUnmaskAll) {
+      btnUnmaskAll.addEventListener('click', async () => {
+        if (!latestAntennaMask || !latestAntennaMask.antennas) return;
+        const masked = latestAntennaMask.antennas.filter(a => !a.enabled);
+        if (masked.length === 0) {
+          showToast('All antennas are already active');
+          return;
+        }
+
+        try {
+          await Promise.all(masked.map(a =>
+            fetch('/api/antennas/mask', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ antenna_id: a.antenna_id, enabled: true })
+            })
+          ));
+          showToast(`Unmasked ${masked.length} antennas`);
+          masked.forEach(a => { a.enabled = true; });
+          renderArrayGrid();
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
+    }
+  }
+
+  // --- Initial Boot Sequence ---
+  window.addEventListener('DOMContentLoaded', () => {
+    initControls();
+    initWebSocket();
   });
 
-  if (allBeamsGridEl) {
-    allBeamsGrid = new AllBeamsGridRenderer(allBeamsGridEl, (beamId) => {
-      selectBeam(beamId);
-    });
-  }
-
-  // Initial draw & connect
-  drawSkyMap();
-  drawSpectrometer();
-  fetch('/api/routine')
-    .then(res => res.ok ? res.json() : null)
-    .then(data => { if (data) handleRoutineUpdate(data); })
-    .catch(() => {});
-  initWebSocket();
 })();
-

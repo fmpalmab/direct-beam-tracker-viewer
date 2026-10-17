@@ -19,7 +19,11 @@ from viewer.routine import (
 from viewer.server import create_app
 from viewer.spectrometer import SpectrometerProcessor
 
-_tools_dir = Path(__file__).resolve().parents[2] / "tools"
+_possible_tools = [
+    Path(__file__).resolve().parents[1] / "tools",
+    Path(__file__).resolve().parents[2] / "tools",
+]
+_tools_dir = next((p for p in _possible_tools if p.exists()), _possible_tools[0])
 REAL_CATALOG = (
     _tools_dir / "verified_targets_10beams.json"
     if (_tools_dir / "verified_targets_10beams.json").exists()
