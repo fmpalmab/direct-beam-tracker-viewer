@@ -393,18 +393,60 @@ body {
   gap: 16px;
 }
 
-#sky-canvas {
+/* HiDPI-safe canvas sizing: explicit height stops resizeHiDPICanvas()
+   from compounding the layout height each frame. */
+#sky-canvas,
+#spectrometer-canvas,
+#waterfall-canvas,
+#grid-canvas,
+#corr-split-canvas,
+#corr-amp-canvas,
+#corr-phase-canvas,
+#corr-bandpass-canvas,
+#fringe-canvas,
+#ant-master-canvas,
+#antenna-mask-canvas {
   width: 100%;
-  max-width: 600px;
-  aspect-ratio: 1 / 1;
+  height: 100%;
+  display: block;
+}
+
+
+/* Interactive canvas cursors (hover inspect / click-to-select) */
+#sky-canvas,
+#grid-canvas,
+#spectrometer-canvas,
+#corr-split-canvas,
+#corr-amp-canvas,
+#corr-phase-canvas,
+#corr-bandpass-canvas,
+#fringe-canvas,
+#ant-master-canvas {
   cursor: crosshair;
 }
 
-#spectrometer-canvas,
-#waterfall-canvas {
-  width: 100%;
-  max-width: 600px;
-  display: block;
+#antenna-mask-canvas {
+  cursor: pointer;
+}
+
+.canvas-hover-readout {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: rgba(7, 10, 18, 0.88);
+  border: 1px solid var(--accent-cyan);
+  color: var(--text-highlight);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.canvas-hover-readout.hidden,
+.hidden {
+  display: none !important;
 }
 
 .spec-readout {
@@ -813,26 +855,6 @@ body {
   border-color: var(--accent-gold) !important;
 }
 
-.panel-layout-grid {
-  display: grid;
-  grid-template-columns: 560px 1fr;
-  gap: 16px;
-}
-
-@media (max-width: 1200px) {
-  .panel-layout-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-#grid-canvas {
-  width: 100%;
-  max-width: 520px;
-  aspect-ratio: 1 / 1;
-  display: block;
-  cursor: crosshair;
-}
-
 .grid-table-wrap {
   max-height: 540px;
   overflow-y: auto;
@@ -849,37 +871,6 @@ body {
   background: var(--accent-cyan);
   border-radius: 2px;
   min-width: 2px;
-}
-
-/* ========================================================================== */
-/* TAB 3: Correlator & Visibilities Layout (F4.4)                            */
-/* ========================================================================== */
-.correlator-grid-layout {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-@media (max-width: 1200px) {
-  .correlator-grid-layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-#corr-amp-canvas,
-#corr-phase-canvas {
-  width: 100%;
-  max-width: 420px;
-  aspect-ratio: 1 / 1;
-  display: block;
-  cursor: crosshair;
-}
-
-#corr-bandpass-canvas,
-#fringe-canvas {
-  width: 100%;
-  max-width: 560px;
-  display: block;
 }
 
 .fringe-selectors {
@@ -1099,12 +1090,6 @@ body {
   overflow: hidden;
 }
 
-#ant-master-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
 .ant-master-footer {
   display: flex;
   justify-content: space-between;
@@ -1266,51 +1251,184 @@ body {
 }
 
 /* ========================================================================== */
-/* Direct Beam Tracker Multi-Zone Layout (F4.2 / Bottleneck 4)               */
+/* TAB 1: Balanced 3-Zone Direct Beam Tracker Workspace                       */
 /* ========================================================================== */
 .tracker-workspace {
   display: grid;
-  grid-template-rows: auto 1fr;
-  grid-template-columns: 2fr 3fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: 5fr 6fr;
   grid-template-areas:
     "seam-dock seam-dock"
     "line-spec waterfalls";
   gap: 12px;
-  height: calc(100vh - 64px); /* Lock to viewport height — no runaway left column */
-  overflow: hidden;
+  height: calc(100vh - 132px);
+  min-height: 580px;
 }
 
 .seam-dock {
   grid-area: seam-dock;
-  max-height: 210px;
-  overflow-y: auto;
+  max-height: 230px;
+  padding: 10px 14px;
+}
+
+.seam-dock-split {
+  display: grid;
+  grid-template-columns: 1fr 195px;
+  gap: 14px;
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
+}
+
+.seam-dock-main {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .seam-dock-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .seam-dock-actions {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .seam-table-wrap {
-  overflow-y: auto;
   flex: 1;
+  overflow-y: auto;
+  max-height: 155px;
 }
 
-.seam-table th, .seam-table td {
-  padding: 6px 10px;
+.seam-table th,
+.seam-table td {
+  padding: 5px 8px;
   font-size: 11px;
+}
+
+.seam-sky-radar {
+  display: flex;
+  flex-direction: column;
+  background: #060a14;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 6px;
+}
+
+.seam-sky-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+.sky-radar-wrap {
+  flex: 1;
+  width: 100%;
+  height: 155px;
+}
+
+.line-spec-panel {
+  grid-area: line-spec;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.line-spec-panel .spec-canvas-wrap {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+
+.spec-footer-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-height: 54px;
+  overflow-y: auto;
+}
+
+.waterfalls-panel {
+  grid-area: waterfalls;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.waterfalls-stack-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 2px;
+}
+
+.multi-waterfall-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.waterfall-strip {
+  background: #050811;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.waterfall-strip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.wf-strip-label {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.wf-strip-metric {
+  color: var(--text-dim, #94a3b8);
+}
+
+.waterfall-strip .waterfall-canvas-wrap {
+  width: 100%;
+  height: 105px;
+}
+
+.shared-freq-axis-wrap {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px 0 8px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.shared-freq-ticks {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.shared-freq-ticks .split-tick {
+  color: var(--accent-amber);
 }
 
 .steer-drawer {
@@ -1335,132 +1453,59 @@ body {
   color: var(--accent-cyan);
 }
 
-.line-spec-panel {
-  grid-area: line-spec;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+/* ========================================================================== */
+/* TAB 2: 16-Beam Sky Grid Camera & 4x4 Spectrogram Matrix                    */
+/* ========================================================================== */
+.panel-layout-grid {
+  display: grid;
+  grid-template-columns: 480px 1fr;
+  gap: 16px;
+  align-items: stretch;
 }
 
-.line-spec-panel .spec-canvas-wrap {
-  flex: 1;
-  min-height: 200px;
-  position: relative;
-}
-
-.waterfalls-panel {
-  grid-area: waterfalls;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.waterfalls-stack-scroll {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 0;
-}
-
-.multi-waterfall-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.waterfall-strip {
-  background: #050811;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
-  border-radius: var(--radius-sm, 4px);
-  overflow: hidden;
-}
-
-.waterfall-strip-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 3px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-.wf-strip-label {
-  color: var(--accent-cyan);
-  font-weight: 600;
-}
-
-.wf-strip-metric {
-  color: var(--text-dim, #94a3b8);
-}
-
-.waterfall-strip .waterfall-canvas-wrap {
+.grid-canvas-wrap {
   width: 100%;
-  height: 90px;
+  height: 450px;
 }
 
-.shared-freq-axis-wrap {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.4);
-  border-top: 1px solid var(--border-subtle);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-dim);
-}
-
-.shared-freq-ticks {
-  display: flex;
-  gap: 20px;
-  align-items: center;
-}
-
-.shared-freq-ticks .split-tick {
-  color: var(--accent-amber);
-}
-
-/* ========================================================================== */
-/* 16-Beam Sky Grid Continuous Waterfall Matrix (Bottleneck 2)               */
-/* ========================================================================== */
 .grid-waterfalls-matrix {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
   gap: 8px;
-  padding: 8px 0;
+  flex: 1;
+  min-height: 450px;
 }
 
 .grid-wf-cell {
-  background: #060913;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
-  border-radius: 4px;
+  background: #050811;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  cursor: pointer;
-  transition: border-color 0.15s ease;
+  display: flex;
+  flex-direction: column;
 }
 
-.grid-wf-cell:hover {
-  border-color: var(--accent-cyan);
+.grid-wf-cell.peak-cell {
+  border-color: var(--accent-gold);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.2);
 }
 
 .grid-wf-cell-header {
   display: flex;
   justify-content: space-between;
-  padding: 2px 6px;
+  align-items: center;
+  padding: 3px 6px;
   background: rgba(255, 255, 255, 0.03);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--accent-cyan);
 }
 
 .grid-wf-canvas-wrap {
+  flex: 1;
   width: 100%;
-  height: 70px;
+  min-height: 88px;
 }
 
 .grid-wf-canvas {
@@ -1470,29 +1515,12 @@ body {
 }
 
 /* ========================================================================== */
-/* Split-Triangle Correlator & Baseline Inspector (Bottleneck 3)              */
+/* TAB 3: Correlator Workspace (Side-by-Side Matrix + Inspector)              */
 /* ========================================================================== */
 .corr-split-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-}
-
-.split-canvas-wrap {
-  width: 100%;
-  max-width: 560px;
-  aspect-ratio: 1 / 1;
-  background: #03060d;
-  border-radius: var(--radius-sm, 6px);
-  overflow: hidden;
-  position: relative;
-}
-
-#corr-split-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-  cursor: crosshair;
 }
 
 .split-footer {
@@ -1502,11 +1530,51 @@ body {
   width: 100%;
 }
 
-.correlator-bottom-layout {
+.correlator-workspace-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 520px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.split-canvas-wrap {
+  width: 100%;
+  height: 470px;
+}
+
+.correlator-dual-stack {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  margin-top: 12px;
+}
+
+.dual-canvas-wrap {
+  width: 100%;
+  height: 245px;
+}
+
+.correlator-right-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.fringe-canvas-wrap {
+  width: 100%;
+  height: 210px;
+}
+
+.bandpass-canvas-wrap {
+  width: 100%;
+  height: 185px;
+}
+
+.split-colorbars-row {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .baseline-picker {
@@ -1520,30 +1588,22 @@ body {
   padding: 2px 4px;
   font-family: var(--font-mono);
   font-size: 11px;
-  background: var(--bg-surface, #0d1221);
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.2));
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   color: #fff;
   text-align: center;
 }
 
 /* ========================================================================== */
-/* 8x8 Vector Canvas Matrix (Bottleneck 1)                                   */
+/* TAB 4: 8x8 Vector Canvas Matrix (HiDPI)                                    */
 /* ========================================================================== */
 .antenna-mask-canvas-wrap {
   position: relative;
   width: 100%;
-  height: 480px;
+  height: 520px;
   background: #050811;
-  border-radius: var(--radius-sm, 6px);
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
   overflow: hidden;
 }
-
-#antenna-mask-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-  cursor: pointer;
-}
-

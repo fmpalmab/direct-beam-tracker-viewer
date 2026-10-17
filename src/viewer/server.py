@@ -7,7 +7,9 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import uvicorn
 from fastapi import (
     Depends,
@@ -45,7 +47,6 @@ from .models import (
 from .poller import StatusPoller
 from .routine import RoutineRunner, RoutineState, generate_schedule, load_targets
 from .spectrometer import FREQUENCIES_ALL_MHZ
-import numpy as np
 
 STATIC_DIR = Path(__file__).parent / "static"
 

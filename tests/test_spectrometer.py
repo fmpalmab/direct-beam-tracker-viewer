@@ -339,12 +339,15 @@ def test_format_sky_grid_frame() -> None:
     assert len(frame_spec.beam_powers) == 16
     assert math.isclose(frame_spec.beam_powers[0], 3.0, abs_tol=0.1)
     assert len(frame_spec.beam_power_spectra) == 16
-    assert len(frame_spec.beam_power_spectra[0]) == 672
+    # 672-channel spectra are decimated to 168 bins for lightweight 4 Hz transport
+    assert len(frame_spec.beam_power_spectra[0]) == 168
 
-    # 3. None fallback
+    # 3. None fallback (synthetic dB-scale frame with a clear off-axis peak)
     frame_fallback = format_sky_grid_frame(None)
     assert len(frame_fallback.beam_powers) == 16
-    assert frame_fallback.peak_power > 0.0
+    assert frame_fallback.peak_beam_id == 5
+    assert frame_fallback.peak_power > -10.0
+    assert len(frame_fallback.beam_power_spectra[0]) == 168
 
 
 def test_subband_stitching_672_channels() -> None:

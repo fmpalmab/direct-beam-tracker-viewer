@@ -115,17 +115,38 @@ def unpack_astron_visibilities(
         return None
 
 
-def compute_correlator_telemetry(vis_complex: np.ndarray, zero_diag: bool = True) -> dict[str, Any]:
-    """
-    vis_complex: shape (64, 64) band-averaged complex visibility matrix (or (672, 64, 64) reduced over freq).
-    """
-    auto = np.real(np.diag(vis_complex))  # shape (64,)
-    denom = np.sqrt(np.outer(auto, auto)) + 1e-12
-    coherence = np.abs(vis_complex) / denom  # Normalized [0, 1]
+def compute_correlator_telemetry(
+    vis_cube: np.ndarray,
+    zero_diag: bool = True,
+    masked_antennas: set[int] | None = None,
+) -> dict[str, Any]:
+    """Compute band-averaged coherence |Gamma_ij|, fringe phase, and auto-power dB from (F, 64, 64) cube."""
+    if vis_cube.ndim == 3:
+        # Incoherent magnitude average across channels prevents delay fringe-washing
+        abs_mean = np.mean(np.abs(vis_cube), axis=0)  # (64, 64)
+        auto = np.mean(np.diagonal(vis_cube, axis1=1, axis2=2).real, axis=0)  # (64,)
+        # Subband-center phase snapshot for clean spatial phase structure
+        mid_f = vis_cube.shape[0] // 2
+        phase_rad = np.angle(np.mean(vis_cube[max(0, mid_f - 4) : mid_f + 4], axis=0))
+    else:
+        abs_mean = np.abs(vis_cube)
+        auto = np.real(np.diag(vis_cube))
+        phase_rad = np.angle(vis_cube)
+
+    denom = np.sqrt(np.outer(np.maximum(auto, 1e-12), np.maximum(auto, 1e-12))) + 1e-12
+    coherence = np.clip(abs_mean / denom, 0.0, 1.0)
     if zero_diag:
         np.fill_diagonal(coherence, 0.0)
+        np.fill_diagonal(phase_rad, 0.0)
 
-    phase_rad = np.angle(vis_complex)  # [-pi, pi]
+    if masked_antennas:
+        for m_idx in masked_antennas:
+            if 0 <= m_idx < coherence.shape[0]:
+                coherence[m_idx, :] = 0.0
+                coherence[:, m_idx] = 0.0
+                phase_rad[m_idx, :] = 0.0
+                phase_rad[:, m_idx] = 0.0
+
     return {
         "coherence": np.round(coherence, 4).tolist(),
         "phase": np.round(phase_rad, 3).tolist(),
@@ -139,15 +160,9 @@ def compute_correlator_diagnostics(
     subband_1: np.ndarray | None = None,
     reference_antennas: list[int] | tuple[int, ...] = (0, 4, 6, 8, 32),
     timestamp: float | None = None,
+    masked_antennas: set[int] | None = None,
 ) -> CorrelatorDiagnostics:
-    """Compute correlator diagnostic products from complex visibility matrices.
-
-    - 672-ch bandpass dB (average auto-correlations across antennas)
-    - 64x64 correlation amplitude matrix: mean(|V|) across frequency
-    - 64x64 normalized coherence matrix |Gamma_ij| in [0, 1]
-    - 64x64 correlation phase matrix: angle(V) across frequency
-    - Reference baseline fringes between antenna 0 and antennas [0, 4, 6, 8, 32]
-    """
+    """Compute correlator diagnostic products from complex visibility matrices."""
     if vis_cube is None:
         if subband_0 is not None and subband_1 is not None:
             vis_cube = np.concatenate([subband_0, subband_1], axis=0)
@@ -156,34 +171,66 @@ def compute_correlator_diagnostics(
         elif subband_1 is not None:
             vis_cube = subband_1
         else:
-            # Generate synthetic Hermitian visibility cube: (672, 64, 64)
+            # Realistic synthetic 8x8 phased-array visibility cube: (672, 64, 64)
             rng = np.random.default_rng(1234)
             n_f = TOTAL_CHANNELS
             n_e = 64
-            re = rng.normal(0.0, 1.0, size=(n_f, n_e, n_e)).astype(np.float32)
-            im = rng.normal(0.0, 1.0, size=(n_f, n_e, n_e)).astype(np.float32)
-            syn = re + 1j * im
-            vis_cube = ((syn + syn.swapaxes(1, 2).conj()) * 0.5).astype(np.complex64)
-            freq_profile = (
-                25.0 + 5.0 * np.sin(2 * np.pi * np.arange(n_f) / 100.0)[:, None]
+            freqs_ghz = (300.0 + np.arange(n_f, dtype=np.float32) * 0.3) * 1e-3  # GHz
+
+            # 8x8 tile coordinates and geometric delay for a point source off-zenith
+            ant_idx = np.arange(n_e, dtype=np.float32)
+            ax = (ant_idx % 8) - 3.5
+            ay = (ant_idx // 8) - 3.5
+            tau_ant_ns = 0.42 * ax + 0.28 * ay  # Geometric delay per antenna (ns)
+
+            # Baseline delay matrix (64, 64) and spatial coherence envelope
+            dtau_ns = tau_ant_ns[:, None] - tau_ant_ns[None, :]
+            dist_tiles = np.sqrt((ax[:, None] - ax[None, :]) ** 2 + (ay[:, None] - ay[None, :]) ** 2)
+            spatial_coh = 0.72 * np.exp(-0.18 * dist_tiles) + 0.08
+
+            # Auto-power bandpass shape (~25 linear -> ~14 dB)
+            bp_shape = (24.0 + 5.5 * np.sin(2.0 * np.pi * np.arange(n_f, dtype=np.float32) / 110.0))[:, None]
+            ant_gains = rng.uniform(0.85, 1.15, size=(1, n_e)).astype(np.float32)
+            auto_f = bp_shape * ant_gains  # (672, 64)
+
+            # Complex visibilities with linear phase slope across frequency
+            phase_cube = 2.0 * np.pi * (freqs_ghz[:, None, None] - 0.3) * dtau_ns[None, :, :]
+            amp_cube = np.sqrt(auto_f[:, :, None] * auto_f[:, None, :]) * spatial_coh[None, :, :]
+            noise = (
+                rng.normal(0.0, 0.8, size=(n_f, n_e, n_e)).astype(np.float32)
+                + 1j * rng.normal(0.0, 0.8, size=(n_f, n_e, n_e)).astype(np.float32)
             )
+            noise = 0.5 * (noise + noise.swapaxes(1, 2).conj())
+            vis_cube = (amp_cube * np.exp(1j * phase_cube) + noise).astype(np.complex64)
             diag_idx = np.diag_indices(n_e)
-            vis_cube[:, diag_idx[0], diag_idx[1]] = (
-                freq_profile + rng.uniform(0.5, 2.0, size=(n_f, n_e))
-            ).astype(np.complex64)
+            vis_cube[:, diag_idx[0], diag_idx[1]] = auto_f.astype(np.complex64)
 
     num_channels = vis_cube.shape[0]
     num_elements = vis_cube.shape[1]
 
     # Auto-correlations: diagonal of each frequency slice
-    diag = np.diagonal(vis_cube, axis1=1, axis2=2).real
+    diag = np.diagonal(vis_cube, axis1=1, axis2=2).real.copy()
+    if masked_antennas:
+        for m_idx in masked_antennas:
+            if 0 <= m_idx < num_elements:
+                diag[:, m_idx] = 1e-6
+
     auto_power = np.mean(diag, axis=1)
     bandpass_db = np.round(power_to_db(auto_power), 2).tolist()
 
     # 64x64 amplitude, phase, and normalized coherence matrices
-    vis_band_avg = np.mean(vis_cube, axis=0)
-    corr_telemetry = compute_correlator_telemetry(vis_band_avg, zero_diag=True)
-    amp_mat = np.round(np.mean(np.abs(vis_cube), axis=0), 3).tolist()
+    corr_telemetry = compute_correlator_telemetry(
+        vis_cube, zero_diag=True, masked_antennas=masked_antennas
+    )
+    amp_mat_arr = np.mean(np.abs(vis_cube), axis=0)
+    np.fill_diagonal(amp_mat_arr, 0.0)
+    if masked_antennas:
+        for m_idx in masked_antennas:
+            if 0 <= m_idx < num_elements:
+                amp_mat_arr[m_idx, :] = 0.0
+                amp_mat_arr[:, m_idx] = 0.0
+
+    amp_mat = np.round(amp_mat_arr, 3).tolist()
     phase_mat = corr_telemetry["phase"]
     coherence_mat = corr_telemetry["coherence"]
     auto_db_list = corr_telemetry["auto_db"]
@@ -216,7 +263,7 @@ def compute_correlator_diagnostics(
             .reshape(num_bins, bin_sz, num_elements)
             .mean(axis=1)
             .T
-        )  # shape (num_elements, 84)
+        )
         antenna_spectra_db = np.round(mini_spectra, 1).tolist()
     else:
         antenna_spectra_db = np.round(full_spectra_db.T, 1).tolist()
@@ -244,81 +291,83 @@ def format_sky_grid_frame(
     """Format 16 beam powers into a 4x4 (l, m) directional cosine grid with centroid detection."""
     l_coords = np.round((np.arange(4) - 1.5) * grid_step_rad, 4).tolist()
     m_coords = np.round((np.arange(4) - 1.5) * grid_step_rad, 4).tolist()
+    t_now = timestamp or time.time()
+    phase_drift = (t_now % 60.0) * 0.35
 
     if beam_powers is None:
-        rng = np.random.default_rng(42)
-        base = rng.uniform(4.0, 7.0, size=16).astype(np.float32)
-        base[5] += 38.5
-        base[6] += 12.0
-        base[1] += 8.0
-        powers_1d = base
-        f_axis = np.linspace(0, 2 * np.pi, 168)
-        band_shape = 2.0 * np.sin(f_axis)
+        rng = np.random.default_rng()
+        base = np.array(
+            [-28.0, -24.5, -26.0, -29.0, -25.0, -6.5, -14.0, -26.5, -27.0, -18.0, -22.0, -28.0, -29.5, -27.5, -28.5, -30.0],
+            dtype=np.float32,
+        )
+        powers_1d = base + rng.normal(0.0, 0.35, size=16).astype(np.float32)
+        f_axis = np.linspace(0, 3 * np.pi, 168)
+        band_shape = 2.5 * np.sin(f_axis + phase_drift * 0.2) + 1.2 * np.cos(f_axis * 2.5)
         spectra_list = [
-            np.round(powers_1d[b] + band_shape + rng.normal(0, 0.4, 168), 2).tolist()
+            np.round(powers_1d[b] + band_shape + rng.normal(0, 0.6, 168), 2).tolist()
             for b in range(16)
         ]
     else:
         arr = np.asarray(beam_powers, dtype=np.float32)
+        # Convert linear power from Kotekan to dB if values are strictly non-negative and exceed dB range or are small linear floats
+        if arr.size > 0 and np.min(arr) >= 0.0 and (np.max(arr) > 100.0 or np.max(arr) < 1.0):
+            arr = power_to_db(arr, floor_db=-50.0)
+
         if arr.ndim == 2:
-            spectra_list = np.round(arr, 2).tolist()
-            powers_1d = np.mean(arr, axis=-1)
-        elif arr.ndim == 1:
-            powers_1d = arr
-            f_axis = np.linspace(0, 2 * np.pi, 168)
-            band_shape = 2.0 * np.sin(f_axis)
-            rng = np.random.default_rng(len(powers_1d))
-            spectra_list = [
-                np.round(powers_1d[b] + band_shape + rng.normal(0, 0.3, 168), 2).tolist()
-                for b in range(min(16, len(powers_1d)))
-            ]
+            # Downsample 672 -> 168 if needed for lightweight 4 Hz WebSocket transport
+            if arr.shape[1] == 672:
+                arr_168 = arr.reshape(arr.shape[0], 168, 4).mean(axis=-1)
+            else:
+                arr_168 = arr
+            spectra_list = np.round(arr_168, 2).tolist()
+            powers_1d = np.mean(arr_168, axis=-1)
         else:
             powers_1d = arr.flatten()
-            f_axis = np.linspace(0, 2 * np.pi, 168)
-            band_shape = 2.0 * np.sin(f_axis)
-            rng = np.random.default_rng(len(powers_1d))
+            f_axis = np.linspace(0, 3 * np.pi, 168)
+            band_shape = 2.5 * np.sin(f_axis + phase_drift * 0.2)
+            rng = np.random.default_rng()
             spectra_list = [
-                np.round(powers_1d[b] + band_shape + rng.normal(0, 0.3, 168), 2).tolist()
+                np.round(powers_1d[b] + band_shape + rng.normal(0, 0.45, 168), 2).tolist()
                 for b in range(min(16, len(powers_1d)))
             ]
 
     if len(powers_1d) < 16:
-        padded = np.zeros(16, dtype=np.float32)
+        padded = np.full(16, -30.0, dtype=np.float32)
         padded[: len(powers_1d)] = powers_1d
         powers_1d = padded
     elif len(powers_1d) > 16:
         powers_1d = powers_1d[:16]
 
     if len(spectra_list) < 16:
-        rng = np.random.default_rng(len(spectra_list))
+        rng = np.random.default_rng()
+        f_axis = np.linspace(0, 3 * np.pi, 168)
         while len(spectra_list) < 16:
             b_idx = len(spectra_list)
-            p = powers_1d[b_idx] if b_idx < len(powers_1d) else 5.0
-            f_axis = np.linspace(0, 2 * np.pi, 168)
+            p = float(powers_1d[b_idx])
             spectra_list.append(
-                np.round(p + 2.0 * np.sin(f_axis) + rng.normal(0, 0.3, 168), 2).tolist()
+                np.round(p + 2.0 * np.sin(f_axis) + rng.normal(0, 0.4, 168), 2).tolist()
             )
 
     grid_4x4 = powers_1d.reshape((4, 4))
     peak_idx = int(np.argmax(powers_1d))
     peak_power = float(powers_1d[peak_idx])
 
-    # Power-weighted centroid coordinates
-    w = np.maximum(powers_1d, 0.0)
-    w_sum = float(np.sum(w))
-    if w_sum > 1e-9:
+    # Linear-power-weighted centroid coordinates
+    lin_w = np.power(10.0, np.clip(powers_1d, -60.0, 50.0) / 10.0)
+    w_sum = float(np.sum(lin_w))
+    if w_sum > 1e-12:
         j_col = np.tile(np.arange(4), 4)
         i_row = np.repeat(np.arange(4), 4)
         l_all = (j_col - 1.5) * grid_step_rad
         m_all = (i_row - 1.5) * grid_step_rad
-        centroid_l = float(np.sum(w * l_all) / w_sum)
-        centroid_m = float(np.sum(w * m_all) / w_sum)
+        centroid_l = float(np.sum(lin_w * l_all) / w_sum)
+        centroid_m = float(np.sum(lin_w * m_all) / w_sum)
     else:
         centroid_l = 0.0
         centroid_m = 0.0
 
     return SkyGridFrame(
-        timestamp=timestamp or time.time(),
+        timestamp=t_now,
         grid_step_rad=grid_step_rad,
         grid_power=np.round(grid_4x4, 3).tolist(),
         beam_powers=np.round(powers_1d, 3).tolist(),

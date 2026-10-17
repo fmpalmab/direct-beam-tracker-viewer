@@ -7,6 +7,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 import numpy as np
@@ -421,7 +422,24 @@ class StatusPoller:
         """1 Hz loop polling antenna mask and correlation visibilities."""
         while self._running:
             t0 = time.monotonic()
-            # 1. Correlator Visibilities
+
+            # 1. Poll Antenna Mask first so masked elements propagate to correlator matrices
+            try:
+                mask_status = await self.client.get_antenna_mask_status()
+                self._latest_antenna_mask = mask_status
+            except Exception:
+                if self._latest_antenna_mask is None:
+                    self._latest_antenna_mask = self._make_synthetic_antenna_mask()
+                mask_status = self._latest_antenna_mask
+
+            masked_set: set[int] = {
+                ant.antenna_id for ant in mask_status.antennas if not ant.enabled
+            }
+            mask_status.active_antennas = 64 - len(masked_set)
+            mask_status.active_elements = 64 - len(masked_set)
+            mask_status.masked_antennas = len(masked_set)
+
+            # 2. Correlator Visibilities
             try:
                 buf_0, buf_1 = await asyncio.gather(
                     self.client.get_inspect_frame("integrated_correlation_buffer_0"),
@@ -432,49 +450,38 @@ class StatusPoller:
                 if vis_0 is not None and vis_1 is not None:
                     vis_cube = np.concatenate([vis_0, vis_1], axis=0)
                     self._latest_vis_cube = vis_cube
-                    corr_diag = compute_correlator_diagnostics(vis_cube=vis_cube)
+                    corr_diag = compute_correlator_diagnostics(
+                        vis_cube=vis_cube, masked_antennas=masked_set
+                    )
                 elif vis_0 is not None:
                     self._latest_vis_cube = vis_0
-                    corr_diag = compute_correlator_diagnostics(subband_0=vis_0)
+                    corr_diag = compute_correlator_diagnostics(
+                        subband_0=vis_0, masked_antennas=masked_set
+                    )
                 else:
                     self._latest_vis_cube = None
                     corr_diag = compute_correlator_diagnostics(
-                        subband_0=vis_0, subband_1=vis_1
+                        subband_0=vis_0, subband_1=vis_1, masked_antennas=masked_set
                     )
                 self._latest_correlator = corr_diag
                 self._broadcast_correlator(corr_diag)
             except Exception as exc:
                 logger.debug("Correlator polling error, using fallback: %s", exc)
                 self._latest_vis_cube = None
-                corr_diag = compute_correlator_diagnostics()
+                corr_diag = compute_correlator_diagnostics(masked_antennas=masked_set)
                 self._latest_correlator = corr_diag
                 self._broadcast_correlator(corr_diag)
 
-            # 2. Antenna Mask
-            try:
-                mask_status = await self.client.get_antenna_mask_status()
-                # Attach antenna spectra from correlator diagnostics if available
-                if corr_diag and corr_diag.antenna_spectra_db:
-                    for i, ant in enumerate(mask_status.antennas):
-                        if i < len(corr_diag.antenna_spectra_db):
-                            # If antenna is disabled, flatline its displayed spectrum
-                            if not ant.enabled:
-                                ant.spectrum_db = [0.0] * len(corr_diag.antenna_spectra_db[i])
-                            else:
-                                ant.spectrum_db = corr_diag.antenna_spectra_db[i]
-                self._latest_antenna_mask = mask_status
-                self._broadcast_antenna_mask(mask_status)
-            except Exception:
-                if self._latest_antenna_mask is None:
-                    self._latest_antenna_mask = self._make_synthetic_antenna_mask()
-                if corr_diag and corr_diag.antenna_spectra_db:
-                    for i, ant in enumerate(self._latest_antenna_mask.antennas):
-                        if i < len(corr_diag.antenna_spectra_db):
-                            if not ant.enabled:
-                                ant.spectrum_db = [0.0] * len(corr_diag.antenna_spectra_db[i])
-                            else:
-                                ant.spectrum_db = corr_diag.antenna_spectra_db[i]
-                self._broadcast_antenna_mask(self._latest_antenna_mask)
+            # 3. Attach per-antenna spectra to mask status and broadcast
+            if corr_diag and corr_diag.antenna_spectra_db:
+                for i, ant in enumerate(mask_status.antennas):
+                    if i < len(corr_diag.antenna_spectra_db):
+                        ant.spectrum_db = (
+                            [0.0] * len(corr_diag.antenna_spectra_db[i])
+                            if not ant.enabled
+                            else corr_diag.antenna_spectra_db[i]
+                        )
+            self._broadcast_antenna_mask(mask_status)
 
             elapsed = time.monotonic() - t0
             sleep_time = max(0.01, self.correlator_interval - elapsed)
