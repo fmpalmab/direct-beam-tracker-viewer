@@ -7,9 +7,9 @@ set -euo pipefail
 
 KOTEKAN_DIR="/home/fpalma/kotekan"
 VIEWER_DIR="/home/fpalma/direct-beam-tracker-viewer"
-CONFIG_FILE="${1:-${KOTEKAN_CONFIG:-${KOTEKAN_DIR}/charts/config/64antennas_tri_engine_benchmark.yaml}}"
+CONFIG_FILE="${1:-${KOTEKAN_CONFIG:-${KOTEKAN_DIR}/charts/config/64antennas_direct_tracker_10beams.yaml}}"
 if [[ "${1:-}" == "--dpdk" ]]; then
-    CONFIG_FILE="${KOTEKAN_DIR}/charts/config/64antennas_tri_engine_dpdk.yaml"
+    CONFIG_FILE="${KOTEKAN_DIR}/charts/config/64antennas_direct_tracker_10beams.yaml"
 fi
 KOTEKAN_BIN="${KOTEKAN_DIR}/build/kotekan/kotekan"
 KOTEKAN_LOG="${KOTEKAN_DIR}/kotekan_run.log"
