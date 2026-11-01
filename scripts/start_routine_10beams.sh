@@ -42,9 +42,9 @@ sleep 1
 
 echo "[3/4] Starting Kotekan 10-Beam Direct Tracker in background..."
 if command -v screen >/dev/null 2>&1; then
-    screen -dmS kotekan bash -c "${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
+    screen -dmS kotekan bash -c "cd '${KOTEKAN_DIR}' && ${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
 else
-    nohup bash -c "${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
+    nohup bash -c "cd '${KOTEKAN_DIR}' && ${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
 fi
 
 echo "Waiting for Kotekan REST API on port 12048..."
