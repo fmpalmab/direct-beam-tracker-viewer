@@ -125,22 +125,26 @@ def quantizer_diagnostics(
 ) -> dict[str, np.ndarray]:
     """Compute 4-bit F-engine quantizer diagnostics from quantized power (LSB^2).
 
-    Uses ``charts_sefd.tracker.quantizer_diagnostics_from_power`` when available
-    and falls back to the exact Mena-Parra et al. (2018) Gaussian quantizer solver.
+    Uses ``charts_sefd.quantization`` when available and falls back to the exact
+    Mena-Parra et al. (2018) Gaussian quantizer solver.
     """
     _ensure_sibling_repos_on_path()
     try:
-        from charts_sefd.tracker import quantizer_diagnostics_from_power
+        from charts_sefd.quantization import (
+            eta_from_sigma,
+            in_optimal_window,
+            q_rms,
+            sigma_from_power,
+        )
 
-        raw = quantizer_diagnostics_from_power(mean_power_lsb2)
-        sigma = np.asarray(raw.get("sigma", raw.get("sigma_lsb")), dtype=float)
-        eta_q = np.asarray(raw.get("eta_q", raw.get("eta")), dtype=float)
-        q_rms = np.asarray(raw.get("q_rms"), dtype=float)
-        in_win = np.asarray(raw.get("in_optimal_window"), dtype=bool)
+        sigma = np.asarray(sigma_from_power(mean_power_lsb2), dtype=float)
+        eta_q = np.asarray(eta_from_sigma(sigma), dtype=float)
+        q_rms_arr = np.asarray(q_rms(sigma), dtype=float)
+        in_win = np.asarray(in_optimal_window(sigma), dtype=bool)
         return {
             "sigma": sigma,
             "eta_q": eta_q,
-            "q_rms": q_rms,
+            "q_rms": q_rms_arr,
             "in_optimal_window": in_win,
         }
     except Exception:
@@ -204,45 +208,41 @@ def compute_beam_sefd(
     eta_quant: float = 0.972,
     specs: dict[float, dict[str, float]] | None = None,
 ) -> tuple[np.ndarray, float]:
-    """Compute per-channel tied-array SEFD [Jy] and mean element response B(alt, az)."""
-    f_arr = np.asarray(freqs_mhz, dtype=float)
+    """Compute per-channel tied-array SEFD [Jy] and mean element response B(alt, az).
+
+    Uses ``charts_sefd.models.{interp_specs, gaussian_power_beam}`` when available
+    with an analytical Gaussian element beam fallback.
+    """
+    f_arr = np.asarray(freqs_mhz, dtype=float).reshape(-1)
     if f_arr.size == 0:
         f_arr = np.linspace(300.0, 501.3, N_CHAN_TOTAL)
     n_eff = max(1, int(n_alive))
     eta_eff = float(np.clip(eta_quant, 1e-3, 1.0))
 
+    if alt_deg <= 0.0:
+        return np.full(f_arr.size, np.inf, dtype=float), 0.0
+
+    sp = _get_antenna_specs(specs)
     _ensure_sibling_repos_on_path()
     try:
-        from charts_sefd.tracker import tracker_beam_sefd
+        from charts_sefd.models import gaussian_power_beam, interp_specs
 
-        sefd_arr = np.asarray(
-            tracker_beam_sefd(
-                zenith_sefd_jy=float(zenith_sefd_jy),
-                alt_deg=float(alt_deg),
-                az_deg=float(az_deg),
-                freqs_mhz=f_arr,
-                n_alive=n_eff,
-                eta_quant=eta_eff,
-                specs=_get_antenna_specs(specs),
-            ),
+        fwhm_e, fwhm_h, _gain_dbi = interp_specs(f_arr, sp)
+        b_arr = np.asarray(
+            gaussian_power_beam(float(alt_deg), float(az_deg), fwhm_e, fwhm_h),
             dtype=float,
         ).reshape(-1)
-        if alt_deg <= 0.0:
-            return np.full(f_arr.size, np.inf, dtype=float), 0.0
-        with np.errstate(divide="ignore", invalid="ignore"):
-            b_arr = float(zenith_sefd_jy) / (n_eff * eta_eff * sefd_arr)
-        b_mean = float(np.nanmedian(np.clip(b_arr, 0.0, 1.0)))
-        return sefd_arr, b_mean
     except Exception:
-        b_arr = _analytical_element_beam(alt_deg, az_deg, f_arr, specs=specs)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            sefd_arr = np.where(
-                b_arr > 1e-6,
-                float(zenith_sefd_jy) / (n_eff * eta_eff * b_arr),
-                np.inf,
-            )
-        b_mean = float(np.median(b_arr)) if b_arr.size else 0.0
-        return sefd_arr, b_mean
+        b_arr = _analytical_element_beam(alt_deg, az_deg, f_arr, specs=sp)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sefd_arr = np.where(
+            b_arr > 1e-6,
+            float(zenith_sefd_jy) / (n_eff * eta_eff * b_arr),
+            np.inf,
+        )
+    b_mean = float(np.median(np.clip(b_arr, 0.0, 1.0))) if b_arr.size else 0.0
+    return sefd_arr, b_mean
 
 
 def compute_radiometer_step(
@@ -254,41 +254,45 @@ def compute_radiometer_step(
     snr: float = 10.0,
     width_s: float = 1e-3,
 ) -> dict[str, float]:
-    """Compute RFI-aware clean bandwidth, 1s sigma_S [Jy], and FRB F_min [Jy ms]."""
+    """Compute RFI-aware clean bandwidth, 1s sigma_S [Jy], and FRB F_min [Jy ms].
+
+    Uses ``charts_sefd.sensitivity.{sigma_s, fluence_min}`` when available with an
+    analytical fallback.
+    """
     frac = float(np.clip(rfi_flagged_fraction, 0.0, 0.999))
+    dnu_clean_hz = max(1.0, float(dnu_hz) * (1.0 - frac))
     if not math.isfinite(beam_sefd_jy) or beam_sefd_jy <= 0.0:
-        dnu_clean = max(1.0, float(dnu_hz) * (1.0 - frac))
         return {
-            "dnu_clean_hz": dnu_clean,
-            "dnu_clean_mhz": dnu_clean * 1e-6,
+            "dnu_clean_hz": dnu_clean_hz,
+            "dnu_clean_mhz": dnu_clean_hz * 1e-6,
             "sigma_s_jy": 0.0,
             "fluence_min_jy_ms": 0.0,
         }
 
     _ensure_sibling_repos_on_path()
     try:
-        from charts_sefd.tracker import tracker_radiometer_step
+        from charts_sefd.sensitivity import fluence_min, sigma_s
 
-        res = tracker_radiometer_step(
-            beam_sefd_jy=float(beam_sefd_jy),
-            dnu_hz=float(dnu_hz),
-            tau_s=float(tau_s),
-            rfi_flagged_fraction=frac,
-            n_pol=int(n_pol),
-            snr=float(snr),
-            width_s=float(width_s),
+        sigma_val = float(
+            sigma_s(
+                float(beam_sefd_jy),
+                1.0,
+                dnu_clean_hz,
+                max(1e-9, float(tau_s)),
+                n_pol=max(1, int(n_pol)),
+            )
         )
-        dnu_clean_hz = float(res.get("dnu_clean_hz", res.get("dnu_clean", dnu_hz * (1.0 - frac))))
-        sigma_val = float(res.get("sigma_s_jy", res.get("sigma_s", 0.0)))
-        fluence_val = float(res.get("fluence_min_jy_ms", res.get("fluence_min", 0.0)))
-        return {
-            "dnu_clean_hz": dnu_clean_hz,
-            "dnu_clean_mhz": dnu_clean_hz * 1e-6,
-            "sigma_s_jy": sigma_val,
-            "fluence_min_jy_ms": fluence_val,
-        }
+        fluence_val = 1.0e3 * float(
+            fluence_min(
+                float(beam_sefd_jy),
+                1.0,
+                dnu_clean_hz,
+                max(1e-9, float(width_s)),
+                snr=float(snr),
+                n_pol=max(1, int(n_pol)),
+            )
+        )
     except Exception:
-        dnu_clean_hz = max(1.0, float(dnu_hz) * (1.0 - frac))
         denom = math.sqrt(max(1, int(n_pol)) * dnu_clean_hz * max(1e-9, float(tau_s)))
         sigma_val = float(beam_sefd_jy) / denom
         f_denom = math.sqrt(max(1, int(n_pol)) * dnu_clean_hz)
@@ -299,12 +303,13 @@ def compute_radiometer_step(
             * math.sqrt(max(1e-9, float(width_s)))
             / f_denom
         )
-        return {
-            "dnu_clean_hz": dnu_clean_hz,
-            "dnu_clean_mhz": dnu_clean_hz * 1e-6,
-            "sigma_s_jy": sigma_val,
-            "fluence_min_jy_ms": fluence_val,
-        }
+
+    return {
+        "dnu_clean_hz": dnu_clean_hz,
+        "dnu_clean_mhz": dnu_clean_hz * 1e-6,
+        "sigma_s_jy": sigma_val,
+        "fluence_min_jy_ms": fluence_val,
+    }
 
 
 def compute_sefd_summary(
@@ -321,7 +326,7 @@ def compute_sefd_summary(
     _ensure_sibling_repos_on_path()
     source_tag = "analytical"
     try:
-        import charts_sefd.tracker  # noqa: F401
+        from charts_sefd import models, quantization, sensitivity  # noqa: F401
 
         source_tag = "charts_sefd"
     except Exception:
@@ -519,6 +524,65 @@ def _write_converted_npy(
     raise OSError(f"Could not write converted calibration .npy for '{src_path}'")
 
 
+def _extract_rfi_profile(
+    n_freq: int,
+    freq_mhz: np.ndarray,
+    meta: dict[str, Any],
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build flagged mask and JSON-serializable RFI notch profile from gain metadata."""
+    flagged = np.zeros(n_freq, dtype=bool)
+    channels_dict: dict[str, list[bool]] = {}
+    for key in ("flagged_channels", "bursty_channels", "incoherent_channels"):
+        raw = meta.get(key)
+        if raw is not None:
+            arr = np.asarray(raw, dtype=bool).reshape(-1)
+            if arr.shape[0] == n_freq:
+                flagged |= arr
+                channels_dict[key] = arr.tolist()
+                continue
+        channels_dict[key] = []
+
+    profile = {
+        "freq_mhz": freq_mhz.tolist(),
+        "flagged_channels": channels_dict["flagged_channels"],
+        "bursty_channels": channels_dict["bursty_channels"],
+        "incoherent_channels": channels_dict["incoherent_channels"],
+        "static_notch_bands_mhz": _merge_flagged_spans(freq_mhz, flagged),
+    }
+    return flagged, profile
+
+
+def _finalize_kotekan_gains_table(
+    src: Path,
+    table: np.ndarray,
+    flagged: np.ndarray,
+    zero_flagged: bool,
+    output_dir: Path | None,
+    rfi_profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Zero flagged channels if requested, write converted .npy, and return summary."""
+    if zero_flagged and np.any(flagged):
+        table[flagged, :] = 0.0 + 0.0j
+
+    notches = (
+        rfi_profile["static_notch_bands_mhz"] if rfi_profile is not None else []
+    )
+    out_path = _write_converted_npy(src, table, zero_flagged, output_dir=output_dir)
+    active = [
+        int(a)
+        for a in range(64)
+        if np.any(np.isfinite(table[:, a]) & (table[:, a] != 0))
+    ]
+    return {
+        "npy_path": str(out_path),
+        "converted": True,
+        "shape": list(table.shape),
+        "active_antennas": active,
+        "static_notch_bands_mhz": notches,
+        "rfi_profile": rfi_profile,
+    }
+
+
 def prepare_gains_for_kotekan(
     path: str | Path,
     zero_flagged: bool = False,
@@ -527,8 +591,9 @@ def prepare_gains_for_kotekan(
     """Prepare a ``.npz`` or ``.npy`` gain file into a Kotekan ``(672, 64)`` ``.npy`` table.
 
     Uses ``charts_utils.cal.gains.load_gains`` and
-    ``charts_utils.cal.kotekan_calibration.{gains_to_tracker_calibration, extract_rfi_mitigation_profile}``
-    when available, with a standalone numpy fallback.
+    ``charts_utils.cal.kotekan_calibration.expand_gains`` when available, with a
+    standalone numpy fallback. Unsolved or non-finite entries are zeroed, and
+    RFI notch spans are extracted directly from channel flag masks.
     """
     src = Path(path)
     out_dir = Path(output_dir) if output_dir is not None else None
@@ -572,34 +637,40 @@ def prepare_gains_for_kotekan(
     _ensure_sibling_repos_on_path()
     try:
         from charts_utils.cal.gains import load_gains
-        from charts_utils.cal.kotekan_calibration import (
-            extract_rfi_mitigation_profile,
-            gains_to_tracker_calibration,
-        )
+        from charts_utils.cal.kotekan_calibration import expand_gains
 
         sol = load_gains(src)
-        table = gains_to_tracker_calibration(
-            sol, n_ant=64, zero_flagged=zero_flagged
+        gains = np.asarray(sol.gains)
+        if gains.ndim not in (2, 3):
+            raise ValueError(f"Expected 2D or 3D gains array, got shape {gains.shape}")
+        n_freq, n_sel = gains.shape[0], gains.shape[1]
+        antennas = (
+            list(sol.antennas) if sol.antennas is not None else list(range(n_sel))
         )
-        rfi_profile = extract_rfi_mitigation_profile(sol)
-        notches = [
-            [float(pair[0]), float(pair[1])]
-            for pair in rfi_profile.get("static_notch_bands_mhz", [])
-        ]
-        out_path = _write_converted_npy(src, table, zero_flagged, output_dir=out_dir)
-        active = [
-            int(a)
-            for a in range(table.shape[1])
-            if np.any(np.isfinite(table[:, a]) & (table[:, a] != 0))
-        ]
-        return {
-            "npy_path": str(out_path),
-            "converted": True,
-            "shape": list(table.shape),
-            "active_antennas": active,
-            "static_notch_bands_mhz": notches,
-            "rfi_profile": rfi_profile,
-        }
+        full = expand_gains(gains, antennas, n_ant=64)
+
+        # expand_gains pads unsolved antennas with 1+0j; Kotekan expects 0+0j for unsolved slots
+        table = np.zeros((n_freq, 64), dtype=np.complex64)
+        for ant_idx in antennas:
+            if 0 <= ant_idx < 64:
+                col = full[:, ant_idx]
+                valid = np.isfinite(col)
+                table[valid, ant_idx] = col[valid].astype(np.complex64)
+
+        freq_mhz = (
+            np.asarray(sol.freq_mhz, dtype=float)
+            if sol.freq_mhz is not None
+            else np.linspace(300.0, 501.3, n_freq)
+        )
+        if src.is_file() and src.suffix.lower() == ".npy":
+            flagged = np.zeros(n_freq, dtype=bool)
+            rfi_profile = None
+        else:
+            flagged, rfi_profile = _extract_rfi_profile(n_freq, freq_mhz, sol.meta)
+
+        return _finalize_kotekan_gains_table(
+            src, table, flagged, zero_flagged, out_dir, rfi_profile
+        )
     except ImportError:
         pass
 
@@ -607,7 +678,7 @@ def prepare_gains_for_kotekan(
     data = np.load(src, allow_pickle=False)
     if isinstance(data, np.ndarray):
         gains = data
-        antennas: list[int] | None = None
+        antennas_fb: list[int] | None = None
         freq_mhz = np.linspace(300.0, 501.3, gains.shape[0])
         flagged = np.zeros(gains.shape[0], dtype=bool)
         rfi_profile = None
@@ -616,10 +687,14 @@ def prepare_gains_for_kotekan(
             if "gains" not in data.files:
                 raise ValueError(f"'{src}' has no 'gains' array (keys: {data.files})")
             gains = np.asarray(data["gains"])
-            fmt_ver = int(data["format_version"].item()) if "format_version" in data.files else 1
+            fmt_ver = (
+                int(data["format_version"].item())
+                if "format_version" in data.files
+                else 1
+            )
             if fmt_ver < 2:
                 gains = np.conj(gains)
-            antennas = (
+            antennas_fb = (
                 [int(a) for a in data["antennas"]] if "antennas" in data.files else None
             )
             freq_mhz = (
@@ -627,29 +702,10 @@ def prepare_gains_for_kotekan(
                 if "freq_mhz" in data.files
                 else np.linspace(300.0, 501.3, gains.shape[0])
             )
-            flagged = np.zeros(gains.shape[0], dtype=bool)
-            for key in ("flagged_channels", "bursty_channels", "incoherent_channels"):
-                if key in data.files:
-                    flagged |= np.asarray(data[key], dtype=bool)
-            rfi_profile = {
-                "freq_mhz": freq_mhz.tolist(),
-                "flagged_channels": (
-                    np.asarray(data["flagged_channels"], dtype=bool).tolist()
-                    if "flagged_channels" in data.files
-                    else []
-                ),
-                "bursty_channels": (
-                    np.asarray(data["bursty_channels"], dtype=bool).tolist()
-                    if "bursty_channels" in data.files
-                    else []
-                ),
-                "incoherent_channels": (
-                    np.asarray(data["incoherent_channels"], dtype=bool).tolist()
-                    if "incoherent_channels" in data.files
-                    else []
-                ),
-                "static_notch_bands_mhz": _merge_flagged_spans(freq_mhz, flagged),
-            }
+            meta_dict = {key: data[key] for key in data.files}
+            flagged, rfi_profile = _extract_rfi_profile(
+                gains.shape[0], freq_mhz, meta_dict
+            )
 
     if gains.ndim == 3:
         gains = np.nanmean(gains, axis=-1)
@@ -657,40 +713,23 @@ def prepare_gains_for_kotekan(
         raise ValueError(f"Expected 2D or 3D gains array, got shape {gains.shape}")
 
     n_freq, n_sel = gains.shape
-    if antennas is None:
-        antennas = list(range(n_sel))
-    if len(antennas) != n_sel:
+    if antennas_fb is None:
+        antennas_fb = list(range(n_sel))
+    if len(antennas_fb) != n_sel:
         raise ValueError(
-            f"Antenna list length ({len(antennas)}) does not match gain columns ({n_sel})"
+            f"Antenna list length ({len(antennas_fb)}) does not match gain columns ({n_sel})"
         )
 
     table = np.zeros((n_freq, 64), dtype=np.complex64)
-    for col_idx, ant_idx in enumerate(antennas):
+    for col_idx, ant_idx in enumerate(antennas_fb):
         if 0 <= ant_idx < 64:
             col = gains[:, col_idx]
             valid = np.isfinite(col)
             table[valid, ant_idx] = col[valid].astype(np.complex64)
 
-    if zero_flagged and np.any(flagged):
-        table[flagged, :] = 0.0 + 0.0j
-
-    notches = (
-        rfi_profile["static_notch_bands_mhz"] if rfi_profile is not None else []
+    return _finalize_kotekan_gains_table(
+        src, table, flagged, zero_flagged, out_dir, rfi_profile
     )
-    out_path = _write_converted_npy(src, table, zero_flagged, output_dir=out_dir)
-    active = [
-        int(a)
-        for a in range(64)
-        if np.any(np.isfinite(table[:, a]) & (table[:, a] != 0))
-    ]
-    return {
-        "npy_path": str(out_path),
-        "converted": True,
-        "shape": list(table.shape),
-        "active_antennas": active,
-        "static_notch_bands_mhz": notches,
-        "rfi_profile": rfi_profile,
-    }
 
 
 def _running_median_1d(arr: np.ndarray, half_width: int = 16) -> np.ndarray:
