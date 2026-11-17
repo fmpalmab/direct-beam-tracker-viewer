@@ -19,6 +19,16 @@
     sun: { ra: 0.0, dec: 0.0 }
   };
 
+  const RFI_FLAG_DEFS = [
+    { bit: 1 << 0, label: 'SK_IMP', cls: '' },
+    { bit: 1 << 1, label: 'SK_CW', cls: '' },
+    { bit: 1 << 2, label: 'BURST', cls: 'burst' },
+    { bit: 1 << 3, label: 'FREQ_MAD', cls: 'burst' },
+    { bit: 1 << 4, label: 'NOTCH', cls: 'notch' },
+    { bit: 1 << 5, label: 'SAT_CLIP', cls: '' },
+    { bit: 1 << 6, label: 'SIR', cls: 'burst' }
+  ];
+
   // --- Global Application State ---
   let activeTab = 'tab-tracker';
   let ws = null;
@@ -30,9 +40,11 @@
   let currentStatus = null;
   let routineState = null;
   let latestSpectrometer = null;
-  let latestGrid = null;
-  let latestCorrelator = null;
+  let latestRfiStatus = null;
+  let latestRfiChannels = null;
+  let latestSefd = null;
   let latestAntennaMask = null;
+  let cachedAntennaSpectra = {};
 
   // Tab 1 (Tracker) State
   let selectedBeamId = 0;
@@ -40,44 +52,17 @@
   let specViewMode = 'all';
   let trackerSpecMode = 'overlay'; // 'overlay' | 'small-mult'
   let specHover = { active: false, cssX: 0, cssY: 0 };
-  let waterfallHistoriesByBeam = {}; // { [beamId]: Array<{ timestamp, power }> }
-  let waterfallFilterMode = 'all'; // 'all' or beamId string
+  let waterfallHistoriesByBeam = {};
+  let waterfallFilterMode = 'all';
   const MAX_WATERFALL_ROWS = 90;
 
-  // Tab 2 (Grid Camera) State & 16 Persistent Offscreen Waterfall Buffers
-  let gridSliceMode = 'full'; // 'full' | 'sub0' | 'sub1'
-  let gridDisplayMode = 'contour'; // 'contour' | 'cells'
-  let gridRightPanelMode = 'waterfalls'; // 'waterfalls' | 'table'
-  let gridDynamicRange = { minDb: -35.0, maxDb: 10.0 };
+  // Tab 2 (RFI Mitigation) State
+  let rfiMetricMode = 'combined'; // 'combined' | 'power' | 'sk' | 'mad'
+  let rfiHover = { active: false, cssX: 0 };
+  let rfiFormDirty = false;
 
-  const GRID_BEAMS = 16;
-  const FREQ_BINS = 168;
-  const HISTORY_LEN = 64;
-
-  const gridOffscreen = Array.from({ length: GRID_BEAMS }, () => {
-    const c = document.createElement('canvas');
-    c.width = FREQ_BINS;
-    c.height = HISTORY_LEN;
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.fillStyle = '#050811';
-    ctx.fillRect(0, 0, FREQ_BINS, HISTORY_LEN);
-    return {
-      canvas: c,
-      ctx,
-      rowImage: ctx.createImageData(FREQ_BINS, 1),
-      latestSpec: null
-    };
-  });
-
-  // Tab 3 (Correlator) State
-  let corrViewMode = 'split'; // 'split' | 'dual'
-  let baselineAntA = 0;
-  let baselineAntB = 4;
-  let latestBaselineData = null;
-  let fringeAntenna = 4;
-  let fringeMode = 'ri'; // 'ri' | 'amp' | 'phase'
-  let bandpassHover = { active: false, cssX: 0 };
-  let fringeHover = { active: false, cssX: 0 };
+  // Tab 3 (SEFD & Calibration) State
+  let calTaperDirty = false;
 
   // Tab 4 (Array) State
   let antViewMode = 'canvas'; // 'canvas' | 'cards'
@@ -123,46 +108,51 @@
   const btnModeSmallMult = document.getElementById('btn-mode-small-mult');
   const multiWaterfallStack = document.getElementById('multi-waterfall-stack');
 
-  // Tab 2
-  const gridCanvas = document.getElementById('grid-canvas');
-  const gridHoverReadout = document.getElementById('grid-hover-readout');
-  const gridCentroidReadout = document.getElementById('grid-centroid-readout');
-  const gridPeakReadout = document.getElementById('grid-peak-readout');
-  const gridTotalFlux = document.getElementById('grid-total-flux');
-  const gridBeamTbody = document.getElementById('grid-beam-tbody');
-  const gridCbMin = document.getElementById('grid-cb-min');
-  const gridCbMax = document.getElementById('grid-cb-max');
-  const gridWfCbMin = document.getElementById('grid-wf-cb-min');
-  const gridWfCbMax = document.getElementById('grid-wf-cb-max');
-  const btnViewCamera = document.getElementById('btn-view-camera');
-  const btnViewWaterfalls = document.getElementById('btn-view-waterfalls');
-  const gridTablePanel = document.getElementById('grid-table-panel');
-  const gridWaterfallsPanel = document.getElementById('grid-waterfalls-panel');
-  const gridWaterfallsMatrix = document.getElementById('grid-waterfalls-matrix');
+  // Tab 2 (RFI)
+  const rfiStageBadge = document.getElementById('rfi-stage-badge');
+  const rfiBlankingBadge = document.getElementById('rfi-blanking-badge');
+  const rfiFlaggedCount = document.getElementById('rfi-flagged-count');
+  const rfiOverallPct = document.getElementById('rfi-overall-pct');
+  const rfiNotchesCount = document.getElementById('rfi-notches-count');
+  const rfiSpectrumCanvas = document.getElementById('rfi-spectrum-canvas');
+  const rfiHoverReadout = document.getElementById('rfi-hover-readout');
+  const rfiTopTbody = document.getElementById('rfi-top-tbody');
+  const rfiTopSummary = document.getElementById('rfi-top-summary');
+  const formRfiConfig = document.getElementById('form-rfi-config');
+  const btnRfiApplyConfig = document.getElementById('btn-rfi-apply-config');
+  const btnRfiResetEma = document.getElementById('btn-rfi-reset-ema');
+  const btnRfiPrewhiten = document.getElementById('btn-rfi-prewhiten');
 
-  // Tab 3
-  const btnCorrViewSplit = document.getElementById('btn-corr-view-split');
-  const btnCorrViewDual = document.getElementById('btn-corr-view-dual');
-  const corrSplitCard = document.getElementById('corr-split-card');
-  const corrDualLayout = document.getElementById('corr-dual-layout');
-  const corrSplitCanvas = document.getElementById('corr-split-canvas');
-  const corrSplitHoverEl = document.getElementById('corr-split-hover');
-  const corrAmpCanvas = document.getElementById('corr-amp-canvas');
-  const corrAmpHoverEl = document.getElementById('corr-amp-hover');
-  const corrAmpCbMax = document.getElementById('corr-amp-cb-max');
-  const corrPhaseCanvas = document.getElementById('corr-phase-canvas');
-  const corrPhaseHoverEl = document.getElementById('corr-phase-hover');
-  const corrBandpassCanvas = document.getElementById('corr-bandpass-canvas');
-  const corrBandpassHoverEl = document.getElementById('corr-bandpass-hover');
-  const fringeCanvas = document.getElementById('fringe-canvas');
-  const fringeHoverEl = document.getElementById('fringe-hover');
-  const baselineInspectorTitle = document.getElementById('baseline-inspector-title');
-  const baselineDelayBadge = document.getElementById('baseline-delay-badge');
-  const baseAntAInput = document.getElementById('base-ant-a');
-  const baseAntBInput = document.getElementById('base-ant-b');
-  const btnInspectBaseline = document.getElementById('btn-inspect-baseline');
+  // Tab 3 (SEFD & Calibration)
+  const sefdNAlive = document.getElementById('sefd-n-alive');
+  const sefdSourceTag = document.getElementById('sefd-source-tag');
+  const sefdQuantSigma = document.getElementById('sefd-quant-sigma');
+  const sefdOptWindowBadge = document.getElementById('sefd-opt-window-badge');
+  const sefdQuantQrms = document.getElementById('sefd-quant-qrms');
+  const sefdEtaQ = document.getElementById('sefd-eta-q');
+  const sefdMeanPwr = document.getElementById('sefd-mean-pwr');
+  const sefdCleanBw = document.getElementById('sefd-clean-bw');
+  const sefdRfiFrac = document.getElementById('sefd-rfi-frac');
+  const sefdArrayZenith = document.getElementById('sefd-array-zenith');
+  const sefdSigmaS = document.getElementById('sefd-sigma-s');
+  const sefdFluenceMin = document.getElementById('sefd-fluence-min');
+  const sefdLstReadout = document.getElementById('sefd-lst-readout');
+  const sefdBeamTbody = document.getElementById('sefd-beam-tbody');
+  const calGainsGen = document.getElementById('cal-gains-gen');
+  const calCurrentFile = document.getElementById('cal-current-file');
+  const calGlobalToggle = document.getElementById('cal-global-toggle');
+  const calGainsInput = document.getElementById('cal-gains-input');
+  const calZeroFlagged = document.getElementById('cal-zero-flagged');
+  const calSyncNotches = document.getElementById('cal-sync-notches');
+  const formReloadGains = document.getElementById('form-reload-gains');
+  const formTaperConfig = document.getElementById('form-taper-config');
+  const taperTypeSelect = document.getElementById('taper-type-select');
+  const taperPedestalInput = document.getElementById('taper-pedestal-input');
+  const taperBislcLoading = document.getElementById('taper-bislc-loading');
+  const taperNormalizeWeights = document.getElementById('taper-normalize-weights');
+  const taperWeightBislc = document.getElementById('taper-weight-bislc');
 
-  // Tab 4
+  // Tab 4 (Array)
   const rfActiveBadge = document.getElementById('rf-active-badge');
   const rfMaskedBadge = document.getElementById('rf-masked-badge');
   const rfAutodetectBadge = document.getElementById('rf-autodetect-badge');
@@ -233,64 +223,11 @@
     setInterval(tick, 1000);
   }
 
-  // --- Colormap Palettes ---
   function viridisColor(val) {
     const t = Math.max(0, Math.min(1, val));
     const r = Math.round(255 * Math.max(0, Math.min(1, 0.267 + t * (-0.005 + t * (1.38 + t * (-2.12 + t * 1.47))))));
     const g = Math.round(255 * Math.max(0, Math.min(1, 0.004 + t * (1.02 + t * (0.14 - t * 0.26)))));
     const b = Math.round(255 * Math.max(0, Math.min(1, 0.329 + t * (1.42 + t * (-2.42 + t * 0.81)))));
-    return [r, g, b];
-  }
-
-  function infernoColor(val) {
-    const t = Math.max(0, Math.min(1, val));
-    let r, g, b;
-    if (t < 0.25) {
-      r = Math.round(255 * (t * 4 * 0.4));
-      g = 0;
-      b = Math.round(255 * (t * 4 * 0.5));
-    } else if (t < 0.5) {
-      const f = (t - 0.25) * 4;
-      r = Math.round(255 * (0.4 + 0.4 * f));
-      g = Math.round(255 * (0.1 * f));
-      b = Math.round(255 * (0.5 * (1 - f)));
-    } else if (t < 0.75) {
-      const f = (t - 0.5) * 4;
-      r = Math.round(255 * (0.8 + 0.18 * f));
-      g = Math.round(255 * (0.1 + 0.5 * f));
-      b = Math.round(255 * (0.1 * f));
-    } else {
-      const f = (t - 0.75) * 4;
-      r = 255;
-      g = Math.round(255 * (0.6 + 0.38 * f));
-      b = Math.round(255 * (0.1 + 0.8 * f));
-    }
-    return [Math.max(0, Math.min(255, r)), Math.max(0, Math.min(255, g)), Math.max(0, Math.min(255, b))];
-  }
-
-  function turboColor(val) {
-    const x = Math.max(0, Math.min(1, val));
-    const r = Math.round(255 * Math.max(0, Math.min(1, 0.1357 + x * (4.6153 + x * (-42.6603 + x * (132.131 - x * (152.9423 - 59.2863 * x)))))));
-    const g = Math.round(255 * Math.max(0, Math.min(1, 0.0914 + x * (2.1941 + x * (4.8429 + x * (-14.1850 + x * (4.27726 + 2.82956 * x)))))));
-    const b = Math.round(255 * Math.max(0, Math.min(1, 0.1066 + x * (12.585 + x * (-60.197 + x * (109.0745 - x * (88.5022 - 26.8115 * x)))))));
-    return [r, g, b];
-  }
-
-  function cyclicPhaseColor(rad) {
-    const norm = (rad + Math.PI) / (2 * Math.PI);
-    const t = Math.max(0, Math.min(1, norm));
-    let r, g, b;
-    if (t < 0.5) {
-      const f = t * 2;
-      r = Math.round(59 + (255 - 59) * f);
-      g = Math.round(130 + (255 - 130) * f);
-      b = 255;
-    } else {
-      const f = (t - 0.5) * 2;
-      r = 255;
-      g = Math.round(255 * (1 - f * 0.7));
-      b = Math.round(255 * (1 - f));
-    }
     return [r, g, b];
   }
 
@@ -324,19 +261,10 @@
       drawSkyMap();
       drawSpectrometer();
       drawMultiWaterfalls();
-    } else if (activeTab === 'tab-grid') {
-      drawGridHeatmap();
-      if (gridRightPanelMode === 'waterfalls') {
-        renderGridWaterfalls();
-      }
-    } else if (activeTab === 'tab-correlator') {
-      if (corrViewMode === 'split') {
-        drawSplitCorrelatorMatrix();
-      } else {
-        drawCorrelatorMatrices();
-      }
-      drawBandpassSpectrum();
-      drawFringePlot();
+    } else if (activeTab === 'tab-rfi') {
+      drawRfiSpectrum();
+    } else if (activeTab === 'tab-sefd') {
+      if (latestSefd) renderSefdSummary(latestSefd);
     } else if (activeTab === 'tab-array') {
       drawMasterAntennaSpectrometer();
       renderArrayGrid();
@@ -378,10 +306,10 @@
     if (!msg) return;
     if (msg.type === 'spectrometer') {
       handleSpectrometerUpdate(msg.data || msg);
-    } else if (msg.type === 'grid') {
-      handleGridUpdate(msg.data || msg);
-    } else if (msg.type === 'correlator') {
-      handleCorrelatorUpdate(msg.data || msg);
+    } else if (msg.type === 'rfi') {
+      handleRfiUpdate(msg.data || msg);
+    } else if (msg.type === 'sefd') {
+      handleSefdUpdate(msg.data || msg);
     } else if (msg.type === 'antenna_mask') {
       handleAntennaMaskUpdate(msg.data || msg);
     } else if (msg.type === 'routine') {
@@ -395,10 +323,11 @@
     if (pollTimerFast) return;
     pollTimerFast = setInterval(async () => {
       try {
-        const [resStatus, resSpec, resGrid] = await Promise.all([
+        const [resStatus, resSpec, resRfi, resRfiCh] = await Promise.all([
           fetch('/api/status').catch(() => null),
           fetch('/api/spectrometer').catch(() => null),
-          fetch('/api/grid').catch(() => null),
+          fetch('/api/rfi').catch(() => null),
+          fetch('/api/rfi/channels').catch(() => null)
         ]);
         if (resStatus && resStatus.ok) {
           handleStatusUpdate(await resStatus.json());
@@ -407,7 +336,11 @@
           setConnectionState('disconnected', 'Disconnected');
         }
         if (resSpec && resSpec.ok) handleSpectrometerUpdate(await resSpec.json());
-        if (resGrid && resGrid.ok) handleGridUpdate(await resGrid.json());
+        if (resRfi && resRfi.ok) {
+          const st = await resRfi.json();
+          const ch = (resRfiCh && resRfiCh.ok) ? await resRfiCh.json() : latestRfiChannels;
+          handleRfiUpdate({ status: st, channels: ch });
+        }
       } catch (e) {
         setConnectionState('disconnected', 'Disconnected');
       }
@@ -415,12 +348,12 @@
 
     pollTimerSlow = setInterval(async () => {
       try {
-        const [resCorr, resMask, resRoutine] = await Promise.all([
-          fetch('/api/correlator').catch(() => null),
+        const [resSefd, resMask, resRoutine] = await Promise.all([
+          fetch('/api/sefd').catch(() => null),
           fetch('/api/antenna_mask').catch(() => null),
-          fetch('/api/routine').catch(() => null),
+          fetch('/api/routine').catch(() => null)
         ]);
-        if (resCorr && resCorr.ok) handleCorrelatorUpdate(await resCorr.json());
+        if (resSefd && resSefd.ok) handleSefdUpdate(await resSefd.json());
         if (resMask && resMask.ok) handleAntennaMaskUpdate(await resMask.json());
         if (resRoutine && resRoutine.ok) handleRoutineUpdate(await resRoutine.json());
       } catch (e) {
@@ -452,7 +385,8 @@
     const activeBeams = status.num_active_beams !== undefined
       ? status.num_active_beams
       : (status.beams ? status.beams.length : 0);
-    if (activeBeamsSummary) activeBeamsSummary.textContent = `${activeBeams} / 16`;
+    const maxBeams = status.max_beams || 16;
+    if (activeBeamsSummary) activeBeamsSummary.textContent = `${activeBeams} / ${maxBeams}`;
 
     const activeAnts = status.active_antennas !== undefined ? status.active_antennas : 64;
     if (activeElementsSummary) activeElementsSummary.textContent = `${activeAnts} / 64`;
@@ -463,7 +397,11 @@
     if (interpToggle) {
       interpToggle.checked = !!status.subframe_interpolation_enabled;
     }
+    if (sefdLstReadout && status.current_lst_hours !== null && status.current_lst_hours !== undefined) {
+      sefdLstReadout.textContent = `LST: ${status.current_lst_hours.toFixed(3)} h`;
+    }
 
+    syncCalTaperControls(status);
     updateBeamSelects(status.beams || []);
     renderBeamTable(status.beams || []);
 
@@ -527,62 +465,46 @@
     }
   }
 
-  function handleGridUpdate(frame) {
-    if (!frame) return;
-    latestGrid = frame;
+  function handleRfiUpdate(payload) {
+    if (!payload) return;
+    const status = payload.status ? payload.status : (payload.enabled !== undefined ? payload : null);
+    const channels = payload.channels ? payload.channels : null;
 
-    if (frame.beam_power_spectra) {
-      pushGridSpectra(frame.beam_power_spectra);
+    if (status) latestRfiStatus = status;
+    if (channels) latestRfiChannels = channels;
+
+    if (latestRfiStatus) {
+      if (rfiStageBadge) {
+        rfiStageBadge.textContent = latestRfiStatus.enabled ? 'ENABLED' : 'BYPASSED';
+        rfiStageBadge.className = `metric-val monospace ${latestRfiStatus.enabled ? 'success' : 'warning'}`;
+      }
+      if (rfiBlankingBadge) {
+        rfiBlankingBadge.textContent = latestRfiStatus.blank_voltages_enabled ? 'IN-PLACE' : 'SHADOW';
+      }
+      if (rfiFlaggedCount) {
+        rfiFlaggedCount.textContent = `${latestRfiStatus.flagged_channels} / ${latestRfiStatus.total_channels || 672}`;
+      }
+      if (rfiOverallPct) {
+        rfiOverallPct.textContent = `${((latestRfiStatus.overall_flagged_chunk_fraction || 0) * 100).toFixed(2)}%`;
+      }
+      const nNotches = (latestRfiStatus.static_notch_bands_mhz || []).length;
+      if (rfiNotchesCount) {
+        rfiNotchesCount.textContent = `${nNotches} band${nNotches === 1 ? '' : 's'}`;
+      }
+
+      populateRfiControls(latestRfiStatus);
+      renderRfiTopTable(latestRfiStatus.top_rfi_channels || []);
     }
 
-    if (gridCentroidReadout) {
-      const cl = frame.centroid_l !== undefined ? frame.centroid_l.toFixed(4) : '0.0000';
-      const cm = frame.centroid_m !== undefined ? frame.centroid_m.toFixed(4) : '0.0000';
-      gridCentroidReadout.textContent = `(${cl}, ${cm})`;
-    }
-    if (gridPeakReadout) {
-      const pId = frame.peak_beam_id !== undefined ? frame.peak_beam_id : 0;
-      const pDb = frame.peak_power !== undefined ? frame.peak_power.toFixed(1) : '--';
-      gridPeakReadout.textContent = `Beam ${pId} (${pDb} dB)`;
-    }
-    if (gridTotalFlux && frame.beam_powers) {
-      let sumLin = 0;
-      frame.beam_powers.forEach(p => { sumLin += Math.pow(10, p / 10); });
-      gridTotalFlux.textContent = `${(10 * Math.log10(Math.max(1e-12, sumLin))).toFixed(1)} dB`;
-    }
-
-    renderGridTable(frame);
-
-    if (activeTab === 'tab-grid') {
-      requestAnimationFrame(() => {
-        drawGridHeatmap();
-        if (gridRightPanelMode === 'waterfalls') {
-          renderGridWaterfalls();
-        }
-      });
+    if (activeTab === 'tab-rfi') {
+      requestAnimationFrame(drawRfiSpectrum);
     }
   }
 
-  function handleCorrelatorUpdate(corr) {
-    if (!corr) return;
-    latestCorrelator = corr;
-
-    if (activeTab === 'tab-correlator') {
-      requestAnimationFrame(() => {
-        if (corrViewMode === 'split') {
-          drawSplitCorrelatorMatrix();
-        } else {
-          drawCorrelatorMatrices();
-        }
-        drawBandpassSpectrum();
-        drawFringePlot();
-      });
-    } else if (activeTab === 'tab-array') {
-      requestAnimationFrame(() => {
-        drawMasterAntennaSpectrometer();
-        renderArrayGrid();
-      });
-    }
+  function handleSefdUpdate(sefd) {
+    if (!sefd) return;
+    latestSefd = sefd;
+    renderSefdSummary(sefd);
   }
 
   function handleAntennaMaskUpdate(maskStatus) {
@@ -608,6 +530,7 @@
     }
 
     if (activeTab === 'tab-array') {
+      refreshSelectedAntennaSpectrum();
       requestAnimationFrame(() => {
         drawMasterAntennaSpectrometer();
         renderArrayGrid();
@@ -930,7 +853,6 @@
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
         ctx.strokeRect(padL, subTop, plotW, subH - 2);
 
-        // Subband split line
         const subX = padL + ((400.8 - fMin) / (fMax - fMin)) * plotW;
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.2)';
         ctx.setLineDash([2, 2]);
@@ -970,7 +892,6 @@
       return;
     }
 
-    // Overlay All Mode
     ctx.strokeStyle = '#121d33';
     ctx.lineWidth = 1;
     ctx.fillStyle = '#5a7192';
@@ -1093,7 +1014,6 @@
       ? allIds
       : (allIds.includes(String(waterfallFilterMode)) ? [String(waterfallFilterMode)] : allIds);
 
-    // Remove stale strips
     Array.from(multiWaterfallStack.children).forEach(child => {
       const stripId = child.getAttribute('data-beam-id');
       if (!displayIds.includes(stripId)) {
@@ -1142,754 +1062,488 @@
   }
 
   // ==========================================================================
-  // TAB 2: 16-Beam Sky Grid Camera & 4x4 Spectrograms
+  // TAB 2: Real-Time RFI Mitigation (cudaRfiMitigationCommand)
   // ==========================================================================
-  function pushGridSpectra(gridSpectra16xF) {
-    if (!gridSpectra16xF || gridSpectra16xF.length === 0) return;
-
-    // Compute dynamic min/max dB across the 16 beams for high-contrast waterfalls
-    let gMin = Infinity, gMax = -Infinity;
-    for (let b = 0; b < Math.min(GRID_BEAMS, gridSpectra16xF.length); b++) {
-      const s = gridSpectra16xF[b];
-      if (!s) continue;
-      for (let i = 0; i < s.length; i++) {
-        if (s[i] < gMin) gMin = s[i];
-        if (s[i] > gMax) gMax = s[i];
+  function decodeFlagBitsHtml(bits) {
+    if (!bits) return '<span class="badge badge-xs status-nominal-badge">CLEAN</span>';
+    const badges = [];
+    RFI_FLAG_DEFS.forEach(def => {
+      if ((bits & def.bit) !== 0) {
+        badges.push(`<span class="rfi-flag-badge ${def.cls}">${def.label}</span>`);
       }
-    }
-    if (isFinite(gMin) && isFinite(gMax) && gMax > gMin) {
-      gridDynamicRange.minDb = gMin - 1.5;
-      gridDynamicRange.maxDb = gMax + 1.5;
-      if (gridWfCbMin) gridWfCbMin.textContent = `${gridDynamicRange.minDb.toFixed(1)} dB`;
-      if (gridWfCbMax) gridWfCbMax.textContent = `${gridDynamicRange.maxDb.toFixed(1)} dB`;
-    }
-
-    const span = Math.max(4.0, gridDynamicRange.maxDb - gridDynamicRange.minDb);
-
-    for (let b = 0; b < GRID_BEAMS; b++) {
-      const spec = gridSpectra16xF[b];
-      if (!spec || spec.length === 0) continue;
-      const buf = gridOffscreen[b];
-      buf.latestSpec = spec;
-
-      // Shift waterfall down by 1px
-      buf.ctx.drawImage(buf.canvas, 0, 0, FREQ_BINS, HISTORY_LEN - 1, 0, 1, FREQ_BINS, HISTORY_LEN - 1);
-
-      const data = buf.rowImage.data;
-      const specLen = spec.length;
-      for (let f = 0; f < FREQ_BINS; f++) {
-        const srcIdx = Math.min(specLen - 1, Math.floor((f * specLen) / FREQ_BINS));
-        const val = spec[srcIdx];
-        const norm = Math.max(0, Math.min(1, (val - gridDynamicRange.minDb) / span));
-        const [r, g, bl] = viridisColor(norm);
-        const p = f * 4;
-        data[p] = r;
-        data[p + 1] = g;
-        data[p + 2] = bl;
-        data[p + 3] = 255;
-      }
-      buf.ctx.putImageData(buf.rowImage, 0, 0);
-    }
+    });
+    return badges.length > 0 ? badges.join('') : `<span class="rfi-flag-badge">0x${bits.toString(16)}</span>`;
   }
 
-  function renderGridWaterfalls() {
-    if (!gridWaterfallsMatrix) return;
-
-    // Order cells so top row is m = +0.03 (Row 3) matching the 2D spatial heatmap
-    if (gridWaterfallsMatrix.children.length !== GRID_BEAMS) {
-      gridWaterfallsMatrix.innerHTML = '';
-      for (let visualRow = 3; visualRow >= 0; visualRow--) {
-        for (let col = 0; col < 4; col++) {
-          const b = visualRow * 4 + col;
-          const cell = document.createElement('div');
-          cell.className = 'grid-wf-cell';
-          cell.id = `grid-wf-cell-${b}`;
-          cell.innerHTML = `
-            <div class="grid-wf-cell-header">
-              <span><strong>B${b}</strong> (R${visualRow}C${col})</span>
-              <span class="monospace" id="grid-wf-db-${b}">-- dB</span>
-            </div>
-            <div class="grid-wf-canvas-wrap">
-              <canvas class="grid-wf-canvas" id="grid-wf-canvas-${b}"></canvas>
-            </div>
-          `;
-          gridWaterfallsMatrix.appendChild(cell);
-        }
-      }
-    }
-
-    const peakId = latestGrid && latestGrid.peak_beam_id !== undefined ? latestGrid.peak_beam_id : -1;
-    const minDb = gridDynamicRange.minDb;
-    const maxDb = gridDynamicRange.maxDb;
-    const span = Math.max(4.0, maxDb - minDb);
-
-    for (let b = 0; b < GRID_BEAMS; b++) {
-      const cell = document.getElementById(`grid-wf-cell-${b}`);
-      if (cell) cell.classList.toggle('peak-cell', b === peakId);
-
-      const dbEl = document.getElementById(`grid-wf-db-${b}`);
-      if (dbEl && latestGrid && latestGrid.beam_powers && latestGrid.beam_powers[b] !== undefined) {
-        dbEl.textContent = `${latestGrid.beam_powers[b].toFixed(1)} dB`;
-      }
-
-      const c = document.getElementById(`grid-wf-canvas-${b}`);
-      const setup = resizeHiDPICanvas(c);
-      if (!setup) continue;
-      const { ctx, width, height } = setup;
-
-      const splitY = Math.floor(height * 0.42);
-      ctx.fillStyle = '#050811';
-      ctx.fillRect(0, 0, width, splitY);
-
-      // Top 42%: Live 1D Line Spectrum
-      const spec = gridOffscreen[b].latestSpec;
-      if (spec && spec.length > 0) {
-        const color = b === peakId ? '#fbbf24' : '#00e5ff';
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        for (let i = 0; i < spec.length; i++) {
-          const x = (i / (spec.length - 1)) * width;
-          const norm = Math.max(0, Math.min(1, (spec[i] - minDb) / span));
-          const y = splitY - 3 - norm * (splitY - 7);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-      }
-
-      // Divider
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, splitY);
-      ctx.lineTo(width, splitY);
-      ctx.stroke();
-
-      // Bottom 58%: Persistent 2D Waterfall
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(gridOffscreen[b].canvas, 0, splitY + 1, width, height - splitY - 1);
-    }
+  function decodeFlagBitsText(bits) {
+    if (!bits) return 'CLEAN';
+    const names = [];
+    RFI_FLAG_DEFS.forEach(def => {
+      if ((bits & def.bit) !== 0) names.push(def.label);
+    });
+    return names.length > 0 ? names.join('|') : `0x${bits.toString(16)}`;
   }
 
-  function getSlicedBeamPowers(frame) {
-    if (!frame) return [];
-    if (gridSliceMode === 'full' || !frame.beam_power_spectra || frame.beam_power_spectra.length !== 16) {
-      return frame.beam_powers || [];
-    }
-    const specLen = frame.beam_power_spectra[0].length;
-    const half = Math.floor(specLen / 2);
-    const chStart = gridSliceMode === 'sub0' ? 0 : half;
-    const chEnd = gridSliceMode === 'sub0' ? half : specLen;
-    const powers = [];
+  function populateRfiControls(st) {
+    if (!st || rfiFormDirty) return;
+    const active = document.activeElement;
+    if (formRfiConfig && active && formRfiConfig.contains(active)) return;
 
-    for (let b = 0; b < 16; b++) {
-      const spec = frame.beam_power_spectra[b];
-      let sumLin = 0;
-      for (let ch = chStart; ch < chEnd; ch++) {
-        sumLin += Math.pow(10, spec[ch] / 10.0);
-      }
-      powers.push(10.0 * Math.log10(Math.max(1e-12, sumLin / Math.max(1, chEnd - chStart))));
-    }
-    return powers;
+    const setCheck = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.checked = !!val;
+    };
+    const setVal = (id, val) => {
+      const el = document.getElementById(id);
+      if (el && val !== undefined && val !== null) el.value = val;
+    };
+
+    setCheck('rfi-cfg-enabled', st.enabled);
+    setCheck('rfi-cfg-blank', st.blank_voltages_enabled);
+    setCheck('rfi-cfg-sk', st.enable_sk_check);
+    setCheck('rfi-cfg-burst', st.enable_time_burst_check);
+    setCheck('rfi-cfg-mad', st.enable_freq_mad_check);
+    setCheck('rfi-cfg-sat', st.enable_saturation_check);
+    setCheck('rfi-cfg-sir', st.enable_morphology_sir);
+    setCheck('rfi-cfg-ema', st.enable_persistent_ema);
+
+    setVal('rfi-cfg-sk-thresh', st.sk_sigma_threshold);
+    setVal('rfi-cfg-burst-thresh', st.burst_sigma_threshold);
+    setVal('rfi-cfg-mad-thresh', st.mad_sigma_threshold);
+    setVal('rfi-cfg-win-half', st.freq_window_half_width);
+    setVal('rfi-cfg-sat-thresh', st.saturation_fraction_threshold);
+    setVal('rfi-cfg-ema-alpha', st.ema_alpha);
+    setVal('rfi-cfg-edge-ignore', st.edge_channels_to_ignore);
+
+    const notchStr = (st.static_notch_bands_mhz || [])
+      .map(pair => `${Number(pair[0]).toFixed(1)}-${Number(pair[1]).toFixed(1)}`)
+      .join(', ');
+    setVal('rfi-cfg-notches', notchStr);
   }
 
-  function renderGridTable(frame) {
-    if (!gridBeamTbody) return;
-    const powers = getSlicedBeamPowers(frame);
-    if (!powers || powers.length === 0) {
-      gridBeamTbody.innerHTML = '<tr><td colspan="6" class="empty-state">No grid camera telemetry</td></tr>';
+  function parseNotchBandsInput(raw) {
+    const text = (raw || '').trim();
+    if (!text) return [];
+    const bands = [];
+    text.split(',').forEach(part => {
+      const clean = part.trim();
+      if (!clean) return;
+      const pieces = clean.split('-').map(s => parseFloat(s.trim()));
+      if (pieces.length === 2 && !isNaN(pieces[0]) && !isNaN(pieces[1])) {
+        bands.push([Math.min(pieces[0], pieces[1]), Math.max(pieces[0], pieces[1])]);
+      }
+    });
+    return bands;
+  }
+
+  function renderRfiTopTable(topList) {
+    if (!rfiTopTbody) return;
+    if (rfiTopSummary) {
+      rfiTopSummary.textContent = `${topList.length} top flagged channel${topList.length === 1 ? '' : 's'}`;
+    }
+    if (!topList || topList.length === 0) {
+      rfiTopTbody.innerHTML = '<tr><td colspan="8" class="empty-state">No flagged RFI channels in current frame</td></tr>';
       return;
     }
 
-    let minDb = Math.min(...powers);
-    let maxDb = Math.max(...powers);
-    const peakId = powers.indexOf(maxDb);
-
-    gridBeamTbody.innerHTML = '';
-    for (let b = 0; b < 16; b++) {
-      const row = Math.floor(b / 4);
-      const col = b % 4;
-      const l = (-0.03 + col * 0.02).toFixed(4);
-      const m = (-0.03 + row * 0.02).toFixed(4);
-      const db = powers[b].toFixed(1);
-      const relPct = Math.max(0, Math.min(100, ((powers[b] - minDb) / (maxDb - minDb + 1e-6)) * 100)).toFixed(0);
-      const isPeak = b === peakId;
-
+    rfiTopTbody.innerHTML = '';
+    topList.forEach(ch => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td style="color: ${BEAM_COLORS[b % BEAM_COLORS.length]}; font-weight: 700;">Beam ${b}</td>
-        <td>R${row} / C${col}</td>
-        <td>(${l}, ${m})</td>
-        <td><span class="monospace ${isPeak ? 'highlight' : ''}">${db} dB</span></td>
-        <td>
-          <div class="power-bar-wrap">
-            <div class="power-bar-fill" style="width: ${relPct}%;"></div>
-            <span class="monospace" style="font-size: 10px;">${relPct}%</span>
-          </div>
-        </td>
-        <td>${isPeak ? '<span class="badge badge-accent">★ PEAK BEAM</span>' : '<span class="status-label">Aperture</span>'}</td>
+        <td><strong>${ch.freq_mhz.toFixed(3)}</strong></td>
+        <td>${ch.mean_power.toFixed(3)}</td>
+        <td>${ch.mean_sk.toFixed(3)}</td>
+        <td>${ch.max_sk.toFixed(3)}</td>
+        <td>${ch.freq_mad_z.toFixed(2)}</td>
+        <td><strong>${(ch.flagged_chunk_fraction * 100).toFixed(1)}%</strong></td>
+        <td>${decodeFlagBitsHtml(ch.flag_bits)}</td>
+        <td><button class="btn btn-xs btn-outline btn-reset-ch-ema" data-freq="${ch.freq_mhz}">Reset EMA</button></td>
       `;
-      gridBeamTbody.appendChild(tr);
-    }
+      const btn = tr.querySelector('.btn-reset-ch-ema');
+      if (btn) {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          resetRfiEma([ch.freq_mhz]);
+        });
+      }
+      rfiTopTbody.appendChild(tr);
+    });
   }
 
-  function drawGridHeatmap() {
-    const setup = resizeHiDPICanvas(gridCanvas);
+  function drawRfiSpectrum() {
+    const setup = resizeHiDPICanvas(rfiSpectrumCanvas);
     if (!setup) return;
     const { ctx, width, height } = setup;
 
-    ctx.fillStyle = '#060a14';
+    ctx.fillStyle = '#05080f';
     ctx.fillRect(0, 0, width, height);
 
-    if (!latestGrid) {
+    const channels = latestRfiChannels && latestRfiChannels.channels ? latestRfiChannels.channels : [];
+    if (channels.length === 0) {
       ctx.fillStyle = '#5a7192';
       ctx.font = '12px ui-monospace, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Awaiting 16-beam sky grid camera frames (4 Hz)...', width / 2, height / 2);
+      ctx.fillText('Awaiting 672-channel RFI diagnostics from cudaRfiMitigationCommand...', width / 2, height / 2);
       return;
     }
 
-    const powers = getSlicedBeamPowers(latestGrid);
-    if (!powers || powers.length !== 16) return;
+    const padL = 48, padR = 44, padT = 16, padB = 26;
+    const plotW = Math.max(10, width - padL - padR);
+    const plotH = Math.max(10, height - padT - padB);
+    const fMin = 300.0;
+    const fMax = 501.3;
+    const n = channels.length;
 
-    const minDb = Math.min(...powers);
-    const maxDb = Math.max(...powers);
-    if (gridCbMin) gridCbMin.textContent = `${minDb.toFixed(1)} dB`;
-    if (gridCbMax) gridCbMax.textContent = `${maxDb.toFixed(1)} dB`;
+    const xForFreq = (f) => padL + ((f - fMin) / (fMax - fMin)) * plotW;
 
-    const pad = 42;
-    const plotW = Math.max(20, width - pad * 2);
-    const plotH = Math.max(20, height - pad * 2);
-
-    if (gridDisplayMode === 'cells') {
-      const cellW = plotW / 4;
-      const cellH = plotH / 4;
-
-      for (let r = 0; r < 4; r++) {
-        for (let c = 0; c < 4; c++) {
-          const bIdx = r * 4 + c;
-          const p = powers[bIdx];
-          const norm = (p - minDb) / (maxDb - minDb + 1e-6);
-          const rgb = infernoColor(norm);
-
-          const x = pad + c * cellW;
-          const y = pad + (3 - r) * cellH;
-
-          ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-          ctx.fillRect(x, y, cellW - 2, cellH - 2);
-
-          ctx.fillStyle = norm > 0.6 ? '#000000' : '#ffffff';
-          ctx.font = 'bold 11px ui-monospace, monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(`B${bIdx}`, x + cellW / 2, y + cellH / 2 - 8);
-          ctx.font = '10px ui-monospace, monospace';
-          ctx.fillText(`${p.toFixed(1)} dB`, x + cellW / 2, y + cellH / 2 + 8);
-        }
+    // 1. Static Notch Shaded Spans
+    const notches = (latestRfiStatus && latestRfiStatus.static_notch_bands_mhz) || [];
+    notches.forEach(pair => {
+      if (pair.length < 2) return;
+      const x0 = Math.max(padL, xForFreq(pair[0]));
+      const x1 = Math.min(padL + plotW, xForFreq(pair[1]));
+      if (x1 > x0) {
+        ctx.fillStyle = 'rgba(168, 85, 247, 0.14)';
+        ctx.fillRect(x0, padT, x1 - x0, plotH);
       }
-    } else {
-      const res = 160;
-      const offscreen = document.createElement('canvas');
-      offscreen.width = res;
-      offscreen.height = res;
-      const offCtx = offscreen.getContext('2d');
-      const imgData = offCtx.createImageData(res, res);
-      const data = imgData.data;
+    });
 
-      const grid4x4 = [];
-      for (let r = 0; r < 4; r++) {
-        grid4x4[r] = [powers[r * 4], powers[r * 4 + 1], powers[r * 4 + 2], powers[r * 4 + 3]];
+    // 2. Dynamic Flagged Channel Highlight Bars
+    const colW = Math.max(1.2, plotW / n);
+    channels.forEach((ch) => {
+      if (ch.flag_bits !== 0 && (ch.flag_bits & (1 << 4)) === 0) {
+        const cx = xForFreq(ch.freq_mhz);
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.22)';
+        ctx.fillRect(cx - colW * 0.5, padT, colW, plotH);
       }
+    });
 
-      for (let py = 0; py < res; py++) {
-        const fy = ((res - 1 - py) / (res - 1)) * 3;
-        const r0 = Math.floor(fy);
-        const r1 = Math.min(3, r0 + 1);
-        const ty = fy - r0;
-
-        for (let px = 0; px < res; px++) {
-          const fx = (px / (res - 1)) * 3;
-          const c0 = Math.floor(fx);
-          const c1 = Math.min(3, c0 + 1);
-          const tx = fx - c0;
-
-          const top = grid4x4[r0][c0] * (1 - tx) + grid4x4[r0][c1] * tx;
-          const bot = grid4x4[r1][c0] * (1 - tx) + grid4x4[r1][c1] * tx;
-          const val = top * (1 - ty) + bot * ty;
-          const norm = (val - minDb) / (maxDb - minDb + 1e-6);
-          const rgb = infernoColor(norm);
-
-          const idx = (py * res + px) * 4;
-          data[idx] = rgb[0];
-          data[idx + 1] = rgb[1];
-          data[idx + 2] = rgb[2];
-          data[idx + 3] = 255;
-        }
-      }
-
-      offCtx.putImageData(imgData, 0, 0);
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(offscreen, pad, pad, plotW, plotH);
-      ctx.imageSmoothingEnabled = false;
-
-      for (let r = 0; r < 4; r++) {
-        for (let c = 0; c < 4; c++) {
-          const bIdx = r * 4 + c;
-          const bx = pad + (c / 3) * plotW;
-          const by = pad + ((3 - r) / 3) * plotH;
-
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
-          ctx.beginPath();
-          ctx.arc(bx, by, 3, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.fillStyle = '#ffffff';
-          ctx.font = '10px ui-monospace, monospace';
-          ctx.textAlign = 'center';
-          ctx.fillText(`B${bIdx} (${powers[bIdx].toFixed(1)}dB)`, bx, by - 7);
-        }
-      }
-    }
-
-    ctx.strokeStyle = '#22324e';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(pad, pad, plotW, plotH);
-
-    ctx.fillStyle = '#8fa5c2';
+    // 3. Grid Lines
+    ctx.strokeStyle = '#141d2e';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#64748b';
     ctx.font = '10px ui-monospace, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    [-0.03, -0.01, 0.01, 0.03].forEach((l, i) => {
-      ctx.fillText(`l=${l.toFixed(2)}`, pad + (i / 3) * plotW, pad + plotH + 8);
-    });
-
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    [-0.03, -0.01, 0.01, 0.03].forEach((m, i) => {
-      ctx.fillText(`m=${m.toFixed(2)}`, pad - 6, pad + ((3 - i) / 3) * plotH);
-    });
-
-    const peakId = powers.indexOf(maxDb);
-    const pRow = Math.floor(peakId / 4);
-    const pCol = peakId % 4;
-    const px = pad + (pCol / 3) * plotW;
-    const py = pad + ((3 - pRow) / 3) * plotH;
-
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(px, py, 16, 0, Math.PI * 2);
-    ctx.stroke();
-
-    const centL = latestGrid.centroid_l !== undefined ? latestGrid.centroid_l : 0.0;
-    const centM = latestGrid.centroid_m !== undefined ? latestGrid.centroid_m : 0.0;
-    const normCentL = Math.max(0, Math.min(1, (centL + 0.03) / 0.06));
-    const normCentM = Math.max(0, Math.min(1, (centM + 0.03) / 0.06));
-    const cx = pad + normCentL * plotW;
-    const cy = pad + (1 - normCentM) * plotH;
-
-    ctx.strokeStyle = '#00e5ff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 9, 0, Math.PI * 2);
-    ctx.moveTo(cx - 14, cy);
-    ctx.lineTo(cx + 14, cy);
-    ctx.moveTo(cx, cy - 14);
-    ctx.lineTo(cx, cy + 14);
-    ctx.stroke();
-  }
-
-  // ==========================================================================
-  // TAB 3: Astron WMMA Correlator & Baseline Inspector
-  // ==========================================================================
-  function drawCorrelatorMatrices() {
-    if (!latestCorrelator) return;
-    drawAmplitudeMatrix();
-    drawPhaseMatrix();
-  }
-
-  function drawSplitCorrelatorMatrix() {
-    const setup = resizeHiDPICanvas(corrSplitCanvas);
-    if (!setup) return;
-    const { ctx, width, height } = setup;
-
-    ctx.fillStyle = '#03060d';
-    ctx.fillRect(0, 0, width, height);
-
-    if (!latestCorrelator || !latestCorrelator.coherence_matrix || !latestCorrelator.phase_matrix) {
-      ctx.fillStyle = '#5a7192';
-      ctx.font = '11px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('Awaiting 64×64 coherence & phase telemetry...', width / 2, height / 2);
-      return;
-    }
-
-    const cohMatrix = latestCorrelator.coherence_matrix;
-    const phaseMatrix = latestCorrelator.phase_matrix;
-
-    const pad = 28;
-    const side = Math.max(64, Math.min(width, height) - pad * 2);
-    const ox = Math.floor((width - side) / 2);
-    const oy = Math.floor((height - side) / 2);
-    const cellW = side / 64;
-    const cellH = side / 64;
-
-    for (let i = 0; i < 64; i++) {
-      for (let j = 0; j < 64; j++) {
-        const x = ox + j * cellW;
-        const y = oy + i * cellH;
-
-        if (i === j) {
-          ctx.fillStyle = '#111927';
-          ctx.fillRect(x, y, Math.ceil(cellW), Math.ceil(cellH));
-        } else if (i < j) {
-          const coh = Math.max(0, Math.min(1, cohMatrix[i][j]));
-          const rgb = viridisColor(coh);
-          ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-          ctx.fillRect(x, y, Math.ceil(cellW), Math.ceil(cellH));
-        } else {
-          const rad = phaseMatrix[i][j];
-          const rgb = cyclicPhaseColor(rad);
-          ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-          ctx.fillRect(x, y, Math.ceil(cellW), Math.ceil(cellH));
-        }
-      }
-    }
-
-    ctx.strokeStyle = '#00e5ff';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(ox, oy);
-    ctx.lineTo(ox + side, oy + side);
-    ctx.stroke();
-
-    if (baselineAntA >= 0 && baselineAntB >= 0) {
-      const minAnt = Math.min(baselineAntA, baselineAntB);
-      const maxAnt = Math.max(baselineAntA, baselineAntB);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(ox + maxAnt * cellW - 1, oy + minAnt * cellH - 1, cellW + 2, cellH + 2);
-      ctx.strokeRect(ox + minAnt * cellW - 1, oy + maxAnt * cellH - 1, cellW + 2, cellH + 2);
-    }
-
-    ctx.strokeStyle = '#22324e';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(ox, oy, side, side);
-
-    ctx.fillStyle = '#8fa5c2';
-    ctx.font = '9px ui-monospace, monospace';
-    const ticks = [0, 8, 16, 24, 32, 40, 48, 56, 63];
-    ctx.textAlign = 'center';
-    ticks.forEach(t => {
-      ctx.fillText(`${t}`, ox + (t / 63) * side, oy + side + 10);
-    });
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ticks.forEach(t => {
-      ctx.fillText(`${t}`, ox - 5, oy + (t / 63) * side);
-    });
-  }
-
-  async function inspectBaseline(antA, antB) {
-    baselineAntA = antA;
-    baselineAntB = antB;
-    if (baseAntAInput) baseAntAInput.value = antA;
-    if (baseAntBInput) baseAntBInput.value = antB;
-
-    try {
-      const res = await fetch(`/api/correlator/baseline/${antA}/${antB}`);
-      if (res.ok) {
-        latestBaselineData = await res.json();
-        if (baselineInspectorTitle) {
-          baselineInspectorTitle.textContent = `Baseline Inspector: Baseline (${antA}, ${antB})`;
-        }
-        if (baselineDelayBadge && latestBaselineData.delay_ns !== undefined) {
-          baselineDelayBadge.textContent = `Delay τ: ${latestBaselineData.delay_ns.toFixed(2)} ns`;
-        }
-        requestAnimationFrame(drawFringePlot);
-      }
-    } catch (e) {
-      console.error('Failed to inspect baseline', e);
-    }
-  }
-
-  function drawAmplitudeMatrix() {
-    const setup = resizeHiDPICanvas(corrAmpCanvas);
-    if (!setup || !latestCorrelator || !latestCorrelator.amplitude_matrix) return;
-    const { ctx, width, height } = setup;
-
-    ctx.fillStyle = '#060a14';
-    ctx.fillRect(0, 0, width, height);
-
-    const matrix = latestCorrelator.amplitude_matrix;
-    const pad = 24;
-    const side = Math.max(64, Math.min(width, height) - pad * 2);
-    const ox = Math.floor((width - side) / 2);
-    const oy = Math.floor((height - side) / 2);
-
-    let maxAmp = 0.001;
-    for (let i = 0; i < 64; i++) {
-      for (let j = 0; j < 64; j++) {
-        if (matrix[i][j] > maxAmp) maxAmp = matrix[i][j];
-      }
-    }
-    if (corrAmpCbMax) corrAmpCbMax.textContent = maxAmp.toFixed(1);
-
-    const cellW = side / 64;
-    const cellH = side / 64;
-    for (let i = 0; i < 64; i++) {
-      for (let j = 0; j < 64; j++) {
-        const rgb = turboColor(matrix[i][j] / maxAmp);
-        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-        ctx.fillRect(ox + j * cellW, oy + i * cellH, Math.ceil(cellW), Math.ceil(cellH));
-      }
-    }
-  }
-
-  function drawPhaseMatrix() {
-    const setup = resizeHiDPICanvas(corrPhaseCanvas);
-    if (!setup || !latestCorrelator || !latestCorrelator.phase_matrix) return;
-    const { ctx, width, height } = setup;
-
-    ctx.fillStyle = '#060a14';
-    ctx.fillRect(0, 0, width, height);
-
-    const matrix = latestCorrelator.phase_matrix;
-    const pad = 24;
-    const side = Math.max(64, Math.min(width, height) - pad * 2);
-    const ox = Math.floor((width - side) / 2);
-    const oy = Math.floor((height - side) / 2);
-    const cellW = side / 64;
-    const cellH = side / 64;
-
-    for (let i = 0; i < 64; i++) {
-      for (let j = 0; j < 64; j++) {
-        const rgb = cyclicPhaseColor(matrix[i][j]);
-        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-        ctx.fillRect(ox + j * cellW, oy + i * cellH, Math.ceil(cellW), Math.ceil(cellH));
-      }
-    }
-  }
-
-  function drawBandpassSpectrum() {
-    const setup = resizeHiDPICanvas(corrBandpassCanvas);
-    if (!setup || !latestCorrelator || !latestCorrelator.bandpass_db) return;
-    const { ctx, width, height } = setup;
-
-    ctx.fillStyle = '#05080f';
-    ctx.fillRect(0, 0, width, height);
-
-    const bp = latestCorrelator.bandpass_db;
-    if (bp.length === 0) return;
-
-    const padL = 42, padR = 14, padT = 12, padB = 22;
-    const plotW = Math.max(10, width - padL - padR);
-    const plotH = Math.max(10, height - padT - padB);
-
-    const minDb = Math.floor((Math.min(...bp) - 2) / 5) * 5;
-    const maxDb = Math.ceil((Math.max(...bp) + 2) / 5) * 5;
-    const span = Math.max(5, maxDb - minDb);
-
-    ctx.strokeStyle = '#121d33';
-    ctx.lineWidth = 1;
-    ctx.fillStyle = '#5a7192';
-    ctx.font = '9px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-
     [300, 350, 400.8, 450, 500].forEach(freq => {
-      const x = padL + ((freq - 300) / 201.3) * plotW;
+      const x = xForFreq(freq);
+      const isSplit = Math.abs(freq - 400.8) < 0.1;
+      ctx.strokeStyle = isSplit ? 'rgba(0, 229, 255, 0.45)' : '#141d2e';
+      if (isSplit) ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(x, padT);
       ctx.lineTo(x, padT + plotH);
       ctx.stroke();
-      ctx.fillText(`${freq} MHz`, x, padT + plotH + 6);
+      ctx.setLineDash([]);
+      ctx.fillStyle = isSplit ? '#00e5ff' : '#64748b';
+      ctx.fillText(`${freq}`, x, padT + plotH + 6);
     });
 
-    const subbandX = padL + ((400.8 - 300) / 201.3) * plotW;
-    ctx.strokeStyle = '#00e5ff';
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(subbandX, padT);
-    ctx.lineTo(subbandX, padT + plotH);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    // Compute value ranges
+    const powers = channels.map(c => c.mean_power);
+    const sks = channels.map(c => c.mean_sk);
+    const mads = channels.map(c => c.freq_mad_z);
 
-    ctx.strokeStyle = '#10b981';
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    for (let ch = 0; ch < bp.length; ch++) {
-      const x = padL + (ch / (bp.length - 1)) * plotW;
-      const y = padT + (1.0 - (bp[ch] - minDb) / span) * plotH;
-      if (ch === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    if (bandpassHover.active && bandpassHover.cssX >= padL && bandpassHover.cssX <= padL + plotW) {
-      const normX = (bandpassHover.cssX - padL) / plotW;
-      const ch = Math.min(bp.length - 1, Math.max(0, Math.round(normX * (bp.length - 1))));
-      const freq = 300.0 + ch * 0.3;
-      ctx.strokeStyle = '#ffffff';
-      ctx.setLineDash([2, 2]);
+    const drawSeries = (vals, minVal, maxVal, color, lineW) => {
+      const span = Math.max(1e-3, maxVal - minVal);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineW;
       ctx.beginPath();
-      ctx.moveTo(bandpassHover.cssX, padT);
-      ctx.lineTo(bandpassHover.cssX, padT + plotH);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (corrBandpassHoverEl) {
-        corrBandpassHoverEl.textContent = `Ch ${ch} (${freq.toFixed(2)} MHz) | Mean Auto: ${bp[ch].toFixed(2)} dB`;
+      for (let i = 0; i < n; i++) {
+        const x = xForFreq(channels[i].freq_mhz);
+        const clamped = Math.max(minVal, Math.min(maxVal, vals[i]));
+        const y = padT + (1.0 - (clamped - minVal) / span) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-    }
-  }
+      ctx.stroke();
+    };
 
-  function drawFringePlot() {
-    const setup = resizeHiDPICanvas(fringeCanvas);
-    if (!setup || !latestCorrelator) return;
-    const { ctx, width, height } = setup;
+    const drawLeftAxis = (minVal, maxVal, label) => {
+      ctx.fillStyle = '#00e5ff';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.font = '9.5px ui-monospace, monospace';
+      for (let k = 0; k <= 4; k++) {
+        const v = minVal + (k / 4) * (maxVal - minVal);
+        const y = padT + (1.0 - k / 4) * plotH;
+        ctx.fillText(v.toFixed(1), padL - 5, y);
+      }
+      ctx.textAlign = 'left';
+      ctx.fillText(label, padL + 4, padT + 8);
+    };
 
-    ctx.fillStyle = '#05080f';
-    ctx.fillRect(0, 0, width, height);
-
-    let ampArr, phaseArr, realArr, imagArr, delayNs = null;
-
-    if (latestBaselineData && latestBaselineData.amplitude && latestBaselineData.phase_rad) {
-      ampArr = latestBaselineData.amplitude;
-      phaseArr = latestBaselineData.phase_rad;
-      realArr = latestBaselineData.real || ampArr.map((a, i) => a * Math.cos(phaseArr[i]));
-      imagArr = latestBaselineData.imag || ampArr.map((a, i) => a * Math.sin(phaseArr[i]));
-      delayNs = latestBaselineData.delay_ns;
-    } else if (latestCorrelator.reference_fringes && latestCorrelator.reference_fringes[fringeAntenna]) {
-      const fringe = latestCorrelator.reference_fringes[fringeAntenna];
-      ampArr = fringe.amplitude;
-      phaseArr = fringe.phase_rad;
-      realArr = fringe.real;
-      imagArr = fringe.imag;
+    const pMax = Math.max(5.0, Math.min(40.0, Math.max(...powers) * 1.1));
+    if (rfiMetricMode === 'power') {
+      drawLeftAxis(0.0, pMax, 'Mean Power (LSB²)');
+      drawSeries(powers, 0.0, pMax, '#00e5ff', 1.6);
+    } else if (rfiMetricMode === 'sk') {
+      const skMax = Math.max(2.5, Math.min(10.0, Math.max(...sks) * 1.1));
+      drawLeftAxis(0.0, skMax, 'Spectral Kurtosis (SK)');
+      drawSeries(sks, 0.0, skMax, '#f59e0b', 1.6);
+    } else if (rfiMetricMode === 'mad') {
+      const madMax = Math.max(8.0, Math.min(30.0, Math.max(...mads.map(Math.abs)) * 1.1));
+      drawLeftAxis(-4.0, madMax, 'Freq MAD Z-Score');
+      drawSeries(mads, -4.0, madMax, '#a855f7', 1.6);
     } else {
-      ctx.fillStyle = '#5a7192';
-      ctx.font = '11px ui-monospace, monospace';
-      ctx.textAlign = 'center';
+      // Combined: Power (left axis, cyan) + SK (right axis, amber)
+      drawLeftAxis(0.0, pMax, 'Power (LSB²)');
+      drawSeries(powers, 0.0, pMax, '#00e5ff', 1.5);
+
+      const skMax = 4.0;
+      drawSeries(sks, 0.0, skMax, '#f59e0b', 1.2);
+      ctx.fillStyle = '#f59e0b';
+      ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Click any baseline cell in the 64×64 matrix to inspect 672-ch fringes...', width / 2, height / 2);
-      return;
-    }
-
-    const padL = 42, padR = 14, padT = 14, padB = 22;
-    const plotW = Math.max(10, width - padL - padR);
-    const plotH = Math.max(10, height - padT - padB);
-    const nCh = ampArr.length;
-
-    ctx.strokeStyle = '#121d33';
-    ctx.lineWidth = 1;
-    ctx.fillStyle = '#5a7192';
-    ctx.font = '9px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-
-    [300, 350, 400.8, 450, 500].forEach(freq => {
-      const x = padL + ((freq - 300) / 201.3) * plotW;
-      ctx.beginPath();
-      ctx.moveTo(x, padT);
-      ctx.lineTo(x, padT + plotH);
-      ctx.stroke();
-      ctx.fillText(`${freq} MHz`, x, padT + plotH + 6);
-    });
-
-    if (fringeMode === 'ri') {
-      let maxAbs = 0.01;
-      for (let ch = 0; ch < nCh; ch++) {
-        if (Math.abs(realArr[ch]) > maxAbs) maxAbs = Math.abs(realArr[ch]);
-        if (Math.abs(imagArr[ch]) > maxAbs) maxAbs = Math.abs(imagArr[ch]);
-      }
-
-      ctx.strokeStyle = '#00e5ff';
-      ctx.lineWidth = 1.3;
-      ctx.beginPath();
-      for (let ch = 0; ch < nCh; ch++) {
-        const x = padL + (ch / (nCh - 1)) * plotW;
-        const y = padT + (0.5 - realArr[ch] / (maxAbs * 2.1)) * plotH;
-        if (ch === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      ctx.strokeStyle = '#f59e0b';
-      ctx.beginPath();
-      for (let ch = 0; ch < nCh; ch++) {
-        const x = padL + (ch / (nCh - 1)) * plotW;
-        const y = padT + (0.5 - imagArr[ch] / (maxAbs * 2.1)) * plotH;
-        if (ch === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    } else if (fringeMode === 'amp') {
-      const maxAmp = Math.max(0.01, ...ampArr);
-      ctx.strokeStyle = '#10b981';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      for (let ch = 0; ch < nCh; ch++) {
-        const x = padL + (ch / (nCh - 1)) * plotW;
-        const y = padT + (1.0 - ampArr[ch] / (maxAmp * 1.05)) * plotH;
-        if (ch === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    } else if (fringeMode === 'phase') {
-      ctx.strokeStyle = '#d500f9';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      for (let ch = 0; ch < nCh; ch++) {
-        const x = padL + (ch / (nCh - 1)) * plotW;
-        const y = padT + (1.0 - (phaseArr[ch] + Math.PI) / (2 * Math.PI)) * plotH;
-        if (ch === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      if (delayNs !== null && delayNs !== undefined) {
-        ctx.fillStyle = '#fbbf24';
-        ctx.font = 'bold 10px ui-monospace, monospace';
-        ctx.textAlign = 'right';
-        ctx.fillText(`Fitted Delay τ = ${delayNs.toFixed(2)} ns`, padL + plotW - 4, padT + 10);
+      ctx.font = '9.5px ui-monospace, monospace';
+      for (let k = 0; k <= 4; k++) {
+        const v = (k / 4) * skMax;
+        const y = padT + (1.0 - k / 4) * plotH;
+        ctx.fillText(`SK ${v.toFixed(1)}`, padL + plotW + 5, y);
       }
     }
 
-    if (fringeHover.active && fringeHover.cssX >= padL && fringeHover.cssX <= padL + plotW) {
-      const normX = (fringeHover.cssX - padL) / plotW;
-      const ch = Math.min(nCh - 1, Math.max(0, Math.round(normX * (nCh - 1))));
-      const freq = 300.0 + ch * 0.3;
+    if (rfiHover.active && rfiHover.cssX >= padL && rfiHover.cssX <= padL + plotW) {
+      const normX = (rfiHover.cssX - padL) / plotW;
+      const targetFreq = fMin + normX * (fMax - fMin);
+      let best = channels[0];
+      let bestDist = Infinity;
+      for (let i = 0; i < n; i++) {
+        const d = Math.abs(channels[i].freq_mhz - targetFreq);
+        if (d < bestDist) { bestDist = d; best = channels[i]; }
+      }
       ctx.strokeStyle = '#ffffff';
       ctx.setLineDash([2, 2]);
       ctx.beginPath();
-      ctx.moveTo(fringeHover.cssX, padT);
-      ctx.lineTo(fringeHover.cssX, padT + plotH);
+      ctx.moveTo(rfiHover.cssX, padT);
+      ctx.lineTo(rfiHover.cssX, padT + plotH);
       ctx.stroke();
       ctx.setLineDash([]);
-      if (fringeHoverEl) {
-        fringeHoverEl.textContent = `Ch ${ch} (${freq.toFixed(2)} MHz) | |V|=${ampArr[ch].toFixed(3)} | ∠V=${phaseArr[ch].toFixed(2)} rad | Re=${realArr[ch].toFixed(2)}, Im=${imagArr[ch].toFixed(2)}`;
+      if (rfiHoverReadout && best) {
+        rfiHoverReadout.textContent =
+          `${best.freq_mhz.toFixed(2)} MHz (SB${best.subband} Ch ${best.local_channel}) | Pwr=${best.mean_power.toFixed(2)} LSB² | SK=${best.mean_sk.toFixed(2)} (max ${best.max_sk.toFixed(2)}) | MAD_Z=${best.freq_mad_z.toFixed(2)} | Flag=${(best.flagged_chunk_fraction * 100).toFixed(0)}% [${decodeFlagBitsText(best.flag_bits)}]`;
       }
+    }
+  }
+
+  async function applyRfiConfig() {
+    const payload = {
+      enabled: !!document.getElementById('rfi-cfg-enabled')?.checked,
+      blank_voltages_enabled: !!document.getElementById('rfi-cfg-blank')?.checked,
+      enable_sk_check: !!document.getElementById('rfi-cfg-sk')?.checked,
+      sk_sigma_threshold: parseFloat(document.getElementById('rfi-cfg-sk-thresh')?.value || '4.5'),
+      enable_time_burst_check: !!document.getElementById('rfi-cfg-burst')?.checked,
+      burst_sigma_threshold: parseFloat(document.getElementById('rfi-cfg-burst-thresh')?.value || '5.0'),
+      enable_freq_mad_check: !!document.getElementById('rfi-cfg-mad')?.checked,
+      mad_sigma_threshold: parseFloat(document.getElementById('rfi-cfg-mad-thresh')?.value || '6.0'),
+      freq_window_half_width: parseInt(document.getElementById('rfi-cfg-win-half')?.value || '8', 10),
+      enable_saturation_check: !!document.getElementById('rfi-cfg-sat')?.checked,
+      saturation_fraction_threshold: parseFloat(document.getElementById('rfi-cfg-sat-thresh')?.value || '0.02'),
+      enable_morphology_sir: !!document.getElementById('rfi-cfg-sir')?.checked,
+      enable_persistent_ema: !!document.getElementById('rfi-cfg-ema')?.checked,
+      ema_alpha: parseFloat(document.getElementById('rfi-cfg-ema-alpha')?.value || '0.02'),
+      edge_channels_to_ignore: parseInt(document.getElementById('rfi-cfg-edge-ignore')?.value || '0', 10),
+      static_notch_bands_mhz: parseNotchBandsInput(document.getElementById('rfi-cfg-notches')?.value)
+    };
+    try {
+      const res = await fetch('/api/rfi/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const reply = await res.json();
+      if (res.ok) {
+        rfiFormDirty = false;
+        showToast(reply.message || 'RFI configuration updated');
+      } else {
+        showToast(reply.detail || 'Failed to update RFI configuration', true);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function resetRfiEma(freqsMhz = null) {
+    const payload = (freqsMhz && freqsMhz.length > 0)
+      ? { freq_mhz: freqsMhz, all: false }
+      : { all: true };
+    try {
+      const res = await fetch('/api/rfi/reset_ema', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const reply = await res.json();
+      if (res.ok) {
+        const msg = freqsMhz ? `Reset EMA baseline for ${freqsMhz.join(', ')} MHz` : 'Reset all RFI EMA baselines';
+        showToast(msg);
+      } else {
+        showToast(reply.detail || 'Failed to reset EMA', true);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function pushPrewhiteningGains() {
+    try {
+      const res = await fetch('/api/rfi/prewhiten', { method: 'POST' });
+      const reply = await res.json();
+      if (res.ok) {
+        showToast(`Pre-whitening gains pushed (${reply.subbands_updated || 1} subbands)`);
+      } else {
+        showToast(reply.detail || 'Failed to push pre-whitening gains', true);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  // ==========================================================================
+  // TAB 3: SEFD, Sensitivity & Calibration Renderers
+  // ==========================================================================
+  function renderSefdSummary(sefd) {
+    if (!sefd) return;
+    if (sefdNAlive) sefdNAlive.textContent = `${sefd.n_alive} / 64`;
+    if (sefdSourceTag) sefdSourceTag.textContent = `Model: ${sefd.source || 'analytical'}`;
+    if (sefdQuantSigma) sefdQuantSigma.textContent = `${sefd.quantizer_sigma_lsb.toFixed(3)} LSB`;
+    if (sefdQuantQrms) sefdQuantQrms.textContent = `q_rms: ${sefd.quantizer_q_rms.toFixed(2)}`;
+    if (sefdOptWindowBadge) {
+      sefdOptWindowBadge.textContent = sefd.in_optimal_window ? 'OPTIMAL [0.93–2.64]' : 'OUT OF WINDOW';
+      sefdOptWindowBadge.className = `badge badge-xs ${sefd.in_optimal_window ? 'status-nominal-badge' : 'status-clip-badge'}`;
+    }
+    if (sefdEtaQ) sefdEtaQ.textContent = sefd.quantizer_eta_q.toFixed(4);
+    if (sefdMeanPwr) sefdMeanPwr.textContent = `Mean Power: ${sefd.mean_power_lsb2.toFixed(2)} LSB²`;
+    if (sefdCleanBw) sefdCleanBw.textContent = `${sefd.clean_bandwidth_mhz.toFixed(1)} MHz`;
+    if (sefdRfiFrac) sefdRfiFrac.textContent = `RFI Flagged: ${(sefd.rfi_flagged_fraction * 100).toFixed(2)}% of ${sefd.total_bandwidth_mhz.toFixed(1)} MHz`;
+    if (sefdArrayZenith) sefdArrayZenith.textContent = `${(sefd.array_zenith_sefd_jy / 1000.0).toFixed(2)} kJy`;
+    if (sefdSigmaS) sefdSigmaS.textContent = `${sefd.array_sigma_s_1s_jy.toFixed(2)} Jy`;
+    if (sefdFluenceMin) sefdFluenceMin.textContent = `10σ 1ms F_min: ${sefd.array_fluence_min_1ms_jy_ms.toFixed(0)} Jy ms`;
+
+    if (!sefdBeamTbody) return;
+    const beams = sefd.beams || [];
+    if (beams.length === 0) {
+      sefdBeamTbody.innerHTML = '<tr><td colspan="10" class="empty-state">No active tracked beams</td></tr>';
+      return;
+    }
+
+    sefdBeamTbody.innerHTML = '';
+    beams.forEach(b => {
+      const tr = document.createElement('tr');
+      const color = BEAM_COLORS[b.beam_id % BEAM_COLORS.length];
+      const name = beamName(b.beam_id) || b.label || `Beam ${b.beam_id}`;
+      const sefdKjy = b.sefd_beam_jy > 0 ? (b.sefd_beam_jy / 1000.0).toFixed(2) : '--';
+      const sigS = b.sigma_s_1s_jy > 0 ? b.sigma_s_1s_jy.toFixed(2) : '--';
+      const fMin = b.fluence_min_1ms_jy_ms > 0 ? b.fluence_min_1ms_jy_ms.toFixed(0) : '--';
+
+      tr.innerHTML = `
+        <td style="color: ${color}; font-weight: 700;">● #${b.beam_id}</td>
+        <td><strong>${name}</strong></td>
+        <td>(${b.l0.toFixed(3)}, ${b.m0.toFixed(3)}, ${b.n0.toFixed(3)})</td>
+        <td>${b.az_deg.toFixed(1)}° / ${b.alt_deg.toFixed(1)}°</td>
+        <td>${b.element_response.toFixed(3)}</td>
+        <td><strong class="highlight">${sefdKjy}</strong></td>
+        <td>${sigS}</td>
+        <td>${fMin}</td>
+        <td><span class="badge badge-xs ${b.calibrated ? 'status-nominal-badge' : 'status-clip-badge'}">${b.calibrated ? 'CAL' : 'UNCAL'}</span></td>
+        <td><button class="btn btn-xs btn-outline btn-toggle-beam-cal" data-beam="${b.beam_id}" data-cal="${b.calibrated}">${b.calibrated ? 'Disable' : 'Enable'}</button></td>
+      `;
+      const btn = tr.querySelector('.btn-toggle-beam-cal');
+      if (btn) {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleBeamCalibration(b.beam_id, !b.calibrated);
+        });
+      }
+      sefdBeamTbody.appendChild(tr);
+    });
+  }
+
+  function syncCalTaperControls(status) {
+    if (!status) return;
+    if (calCurrentFile && status.gains_file) {
+      calCurrentFile.textContent = status.gains_file;
+    }
+    if (calGainsGen && status.gains_generation !== null && status.gains_generation !== undefined) {
+      calGainsGen.textContent = `Gen: ${status.gains_generation}`;
+    }
+    if (calGainsInput && status.gains_file && !calGainsInput.value && document.activeElement !== calGainsInput) {
+      calGainsInput.value = status.gains_file;
+    }
+    if (calGlobalToggle && status.apply_calibration_gains !== null && status.apply_calibration_gains !== undefined) {
+      calGlobalToggle.checked = !!status.apply_calibration_gains;
+    }
+    if (calTaperDirty) return;
+    const active = document.activeElement;
+    if (formTaperConfig && active && formTaperConfig.contains(active)) return;
+
+    if (taperTypeSelect && status.taper_type) taperTypeSelect.value = status.taper_type;
+    if (taperPedestalInput && status.taper_pedestal !== null && status.taper_pedestal !== undefined) {
+      taperPedestalInput.value = status.taper_pedestal;
+    }
+    if (taperNormalizeWeights && status.normalize_weights !== null && status.normalize_weights !== undefined) {
+      taperNormalizeWeights.checked = !!status.normalize_weights;
+    }
+    if (taperWeightBislc && status.enable_weight_bislc !== null && status.enable_weight_bislc !== undefined) {
+      taperWeightBislc.checked = !!status.enable_weight_bislc;
+    }
+    if (taperBislcLoading && status.bislc_diagonal_loading !== null && status.bislc_diagonal_loading !== undefined) {
+      taperBislcLoading.value = status.bislc_diagonal_loading;
+    }
+  }
+
+  async function toggleBeamCalibration(beamId, enabled) {
+    try {
+      const payload = beamId === null ? { enabled } : { beam_id: beamId, enabled };
+      const res = await fetch('/api/calibration/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const reply = await res.json();
+      if (res.ok) {
+        showToast(reply.message || 'Calibration toggle updated');
+      } else {
+        showToast(reply.detail || 'Failed to toggle calibration', true);
+      }
+    } catch (err) {
+      showToast(err.message, true);
     }
   }
 
   // ==========================================================================
   // TAB 4: 8x8 Physical Array Health & HiDPI Masking Matrix
   // ==========================================================================
-  function getAntennaSpectrum(antId) {
+  async function refreshSelectedAntennaSpectrum() {
+    try {
+      const res = await fetch(`/api/antennas/${selectedAntennaId}/spectrum`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.spectrum_db && data.spectrum_db.length > 0) {
+          cachedAntennaSpectra[selectedAntennaId] = data.spectrum_db;
+          if (activeTab === 'tab-array') {
+            requestAnimationFrame(drawMasterAntennaSpectrometer);
+          }
+        }
+      }
+    } catch (e) {
+      // Fall back to 84-bin spectrum attached to AntennaMaskStatus
+    }
+  }
+
+  function getAntennaSpectrum(antId, preferFull = false) {
+    if (preferFull && cachedAntennaSpectra[antId] && cachedAntennaSpectra[antId].length > 0) {
+      return cachedAntennaSpectra[antId];
+    }
     const antennas = (latestAntennaMask && latestAntennaMask.antennas) ? latestAntennaMask.antennas : null;
     const item = antennas ? antennas[antId] : null;
-    if (latestCorrelator && latestCorrelator.full_antenna_spectra_db && latestCorrelator.full_antenna_spectra_db[antId]) {
-      return latestCorrelator.full_antenna_spectra_db[antId];
-    }
     if (item && item.spectrum_db && item.spectrum_db.length > 0) {
       return item.spectrum_db;
     }
-    if (latestCorrelator && latestCorrelator.antenna_spectra_db && latestCorrelator.antenna_spectra_db[antId]) {
-      return latestCorrelator.antenna_spectra_db[antId];
-    }
     const syn = [];
     for (let i = 0; i < 84; i++) {
-      syn.push(12.0 + 3.0 * Math.sin((i / 84) * 3 * Math.PI) + Math.sin(i * 0.4 + antId) * 0.5);
+      syn.push(4.8 + 1.5 * Math.sin((i / 84) * 3 * Math.PI) + Math.sin(i * 0.4 + antId) * 0.3);
     }
     return syn;
   }
@@ -1910,7 +1564,7 @@
     const row = Math.floor(selectedAntennaId / 8);
     const col = selectedAntennaId % 8;
 
-    const spectrum = getAntennaSpectrum(selectedAntennaId);
+    const spectrum = getAntennaSpectrum(selectedAntennaId, true);
     const nPoints = spectrum.length;
     let minDb = 100, maxDb = -100, sumDb = 0, peakIdx = 0;
     for (let i = 0; i < nPoints; i++) {
@@ -1919,10 +1573,10 @@
       if (v < minDb) minDb = v;
       sumDb += v;
     }
-    const peakFreq = 300.0 + (peakIdx / Math.max(1, nPoints - 1)) * 201.6;
+    const peakFreq = 300.0 + (peakIdx / Math.max(1, nPoints - 1)) * 201.3;
     const meanDb = nPoints > 0 ? (sumDb / nPoints) : 0;
 
-    if (antMasterTitle) antMasterTitle.textContent = `Antenna #${String(selectedAntennaId).padStart(2, '0')} Live Line Spectrometer`;
+    if (antMasterTitle) antMasterTitle.textContent = `Antenna #${String(selectedAntennaId).padStart(2, '0')} Live Line Spectrometer (${nPoints}-Ch)`;
     if (antMasterTile) antMasterTile.textContent = `Physical Tile: Row ${row}, Col ${col}`;
     if (antMasterBadge) {
       antMasterBadge.textContent = isEnabled ? 'NOMINAL (ACTIVE)' : 'MASKED (BLANKED)';
@@ -1930,7 +1584,7 @@
     }
     if (antMasterPeak) antMasterPeak.textContent = `${maxDb.toFixed(1)} dB @ ${peakFreq.toFixed(1)} MHz`;
     if (antMasterMean) antMasterMean.textContent = `${meanDb.toFixed(1)} dB`;
-    if (antMasterRms) antMasterRms.textContent = `${item ? item.power_rms.toFixed(2) : '--'} dB`;
+    if (antMasterRms) antMasterRms.textContent = `${item ? item.power_rms.toFixed(2) : '--'} LSB²`;
     if (antMasterClip) antMasterClip.textContent = `${item ? (item.clip_fraction * 100).toFixed(2) : '--'}%`;
     if (antMasterKurt) antMasterKurt.textContent = `${item ? item.kurtosis.toFixed(2) : '--'}`;
     if (btnToggleSelectedMask) {
@@ -1944,7 +1598,7 @@
     const plotH = Math.max(10, height - padT - padB);
 
     const yMin = Math.min(0, Math.floor(minDb / 5) * 5);
-    const yMax = Math.max(25, Math.ceil(maxDb / 5) * 5 + 5);
+    const yMax = Math.max(15, Math.ceil(maxDb / 5) * 5 + 5);
     const yRange = Math.max(10, yMax - yMin);
 
     ctx.strokeStyle = '#141d2e';
@@ -1966,8 +1620,8 @@
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    [300, 350, 400.8, 450, 501.6].forEach(f => {
-      const x = padL + ((f - 300.0) / 201.6) * plotW;
+    [300, 350, 400.8, 450, 501.3].forEach(f => {
+      const x = padL + ((f - 300.0) / 201.3) * plotW;
       const isSplit = Math.abs(f - 400.8) < 0.1;
       ctx.strokeStyle = isSplit ? 'rgba(245, 158, 11, 0.45)' : '#141d2e';
       if (isSplit) ctx.setLineDash([4, 4]);
@@ -2060,14 +1714,12 @@
       const isHovered = idx === hoveredAntennaTile;
       const isMasked = !ant.enabled || ant.status === 'manually_masked' || ant.masked;
       const statusRaw = ant.status || 'nominal';
-      const powerRms = ant.power_rms !== undefined ? ant.power_rms : 8.0;
+      const powerRms = ant.power_rms !== undefined ? ant.power_rms : 3.1;
       const clipPct = ((ant.clip_fraction || 0) * 100).toFixed(2);
 
-      // Card background
       ctx.fillStyle = isMasked ? '#110d1b' : '#0e1628';
       ctx.fillRect(x, y, w, h);
 
-      // Left status accent bar
       let accentColor = '#10b981';
       let badgeText = 'OK';
       if (isMasked) {
@@ -2083,7 +1735,6 @@
       ctx.fillStyle = accentColor;
       ctx.fillRect(x, y, 3, h);
 
-      // Crisp border
       ctx.strokeStyle = isSelected
         ? '#00e5ff'
         : isHovered
@@ -2094,7 +1745,6 @@
       ctx.lineWidth = isSelected ? 2 : 1;
       ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
-      // Header row: #A00 + Status Pill
       ctx.fillStyle = isMasked ? '#a5b4fc' : '#ffffff';
       ctx.font = '700 11px ui-monospace, SFMono-Regular, monospace';
       ctx.textAlign = 'left';
@@ -2106,7 +1756,6 @@
       ctx.textAlign = 'right';
       ctx.fillText(badgeText, x + w - 5, y + 6);
 
-      // Middle: Embedded High-Res 84-Bin Spectrum Sparkline
       const specTop = y + 20;
       const specH = Math.max(14, h - 38);
       const specLeft = x + 6;
@@ -2116,14 +1765,9 @@
       ctx.fillRect(specLeft, specTop, specW, specH);
 
       if (!isMasked) {
-        const spec = (ant.spectrum_db && ant.spectrum_db.length > 0)
-          ? ant.spectrum_db
-          : (latestCorrelator && latestCorrelator.antenna_spectra_db && latestCorrelator.antenna_spectra_db[idx])
-            ? latestCorrelator.antenna_spectra_db[idx]
-            : null;
-
+        const spec = (ant.spectrum_db && ant.spectrum_db.length > 0) ? ant.spectrum_db : null;
         if (spec && spec.length > 1) {
-          let sMin = 5, sMax = 25;
+          let sMin = 0, sMax = 12;
           for (let k = 0; k < spec.length; k++) {
             if (spec[k] < sMin) sMin = spec[k];
             if (spec[k] > sMax) sMax = spec[k];
@@ -2150,12 +1794,11 @@
         ctx.stroke();
       }
 
-      // Footer row: RMS & Clip
       ctx.fillStyle = '#8fa5c2';
       ctx.font = '9.5px ui-monospace, SFMono-Regular, monospace';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(`RMS ${powerRms.toFixed(1)}dB`, x + 7, y + h - 4);
+      ctx.fillText(`Pwr ${powerRms.toFixed(1)}`, x + 7, y + h - 4);
 
       ctx.textAlign = 'right';
       ctx.fillText(`${clipPct}%`, x + w - 5, y + h - 4);
@@ -2182,12 +1825,12 @@
 
     if (!spec || spec.length === 0) return;
     const n = spec.length;
-    let minV = 5, maxV = 25;
-    for (let v of spec) {
+    let minV = 0, maxV = 12;
+    for (const v of spec) {
       if (v < minV) minV = v;
       if (v > maxV) maxV = v;
     }
-    const range = Math.max(8, maxV - minV);
+    const range = Math.max(6, maxV - minV);
 
     ctx.strokeStyle = statusRaw === 'saturated' ? '#ef4444' : statusRaw === 'high_clip' ? '#f59e0b' : '#00e5ff';
     ctx.lineWidth = 1.35;
@@ -2233,7 +1876,7 @@
       antennas = Array.from({ length: 64 }, (_, i) => ({
         antenna_id: i,
         enabled: true,
-        power_rms: 8.0,
+        power_rms: 3.1,
         clip_fraction: 0.001,
         kurtosis: 3.0,
         status: 'nominal',
@@ -2255,7 +1898,7 @@
       const item = antennas[id];
       const isEnabled = item ? item.enabled : true;
       const statusRaw = item ? item.status : 'nominal';
-      const powerRms = item ? item.power_rms.toFixed(2) : '8.00';
+      const powerRms = item ? item.power_rms.toFixed(2) : '3.10';
       const clipPct = item ? (item.clip_fraction * 100).toFixed(2) : '0.01';
 
       let statusClass = 'status-nominal';
@@ -2287,7 +1930,7 @@
           ${!isEnabled ? '<div class="ant-mini-watermark">MASKED</div>' : ''}
         </div>
         <div class="ant-metrics">
-          <div class="ant-metric-row"><span>RMS:</span><span class="ant-metric-val">${powerRms} dB</span></div>
+          <div class="ant-metric-row"><span>Pwr:</span><span class="ant-metric-val">${powerRms}</span></div>
           <div class="ant-metric-row"><span>Clip:</span><span class="ant-metric-val">${clipPct}%</span></div>
         </div>
       `;
@@ -2301,10 +1944,10 @@
         selectedAntennaId = id;
         document.querySelectorAll('.antenna-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
+        refreshSelectedAntennaSpectrum();
         drawMasterAntennaSpectrometer();
       });
 
-      // Append to DOM first so getBoundingClientRect() returns true dimensions for HiDPI scaling
       arrayGrid8x8.appendChild(card);
       const miniCanvas = card.querySelector(`#ant-mini-canvas-${id}`);
       if (miniCanvas) {
@@ -2433,6 +2076,14 @@
       });
     }
 
+    if (specResetZoomBtn) {
+      specResetZoomBtn.addEventListener('click', () => {
+        specViewMode = 'all';
+        if (specViewSelect) specViewSelect.value = 'all';
+        requestAnimationFrame(drawSpectrometer);
+      });
+    }
+
     if (specCanvas) {
       specCanvas.addEventListener('mousemove', (e) => {
         const rect = specCanvas.getBoundingClientRect();
@@ -2502,162 +2153,105 @@
       });
     }
 
-    // Tab 2 Controls
-    document.querySelectorAll('#grid-slice-buttons .btn').forEach(btn => {
+    // Tab 2 Controls (Real-Time RFI Mitigation)
+    document.querySelectorAll('#rfi-metric-buttons .btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('#grid-slice-buttons .btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('#rfi-metric-buttons .btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        gridSliceMode = btn.getAttribute('data-slice');
-        if (latestGrid) {
-          renderGridTable(latestGrid);
-          requestAnimationFrame(drawGridHeatmap);
+        rfiMetricMode = btn.getAttribute('data-metric');
+        requestAnimationFrame(drawRfiSpectrum);
+      });
+    });
+
+    if (rfiSpectrumCanvas) {
+      rfiSpectrumCanvas.addEventListener('mousemove', (e) => {
+        const rect = rfiSpectrumCanvas.getBoundingClientRect();
+        rfiHover.active = true;
+        rfiHover.cssX = e.clientX - rect.left;
+        requestAnimationFrame(drawRfiSpectrum);
+      });
+      rfiSpectrumCanvas.addEventListener('mouseleave', () => {
+        rfiHover.active = false;
+        if (rfiHoverReadout) {
+          rfiHoverReadout.textContent = 'Hover spectrum to inspect channel power, SK, MAD z-score & flag bits';
         }
-      });
-    });
-
-    document.querySelectorAll('#grid-mode-buttons .btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('#grid-mode-buttons .btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        gridDisplayMode = btn.getAttribute('data-mode');
-        requestAnimationFrame(drawGridHeatmap);
-      });
-    });
-
-    if (btnViewWaterfalls && btnViewCamera && gridWaterfallsPanel && gridTablePanel) {
-      btnViewWaterfalls.addEventListener('click', () => {
-        gridRightPanelMode = 'waterfalls';
-        btnViewWaterfalls.classList.add('active');
-        btnViewCamera.classList.remove('active');
-        gridWaterfallsPanel.classList.remove('hidden');
-        gridTablePanel.classList.add('hidden');
-        requestAnimationFrame(renderGridWaterfalls);
-      });
-      btnViewCamera.addEventListener('click', () => {
-        gridRightPanelMode = 'table';
-        btnViewCamera.classList.add('active');
-        btnViewWaterfalls.classList.remove('active');
-        gridTablePanel.classList.remove('hidden');
-        gridWaterfallsPanel.classList.add('hidden');
+        requestAnimationFrame(drawRfiSpectrum);
       });
     }
 
-    // Tab 3 Controls
-    if (btnCorrViewSplit && btnCorrViewDual && corrSplitCard && corrDualLayout) {
-      btnCorrViewSplit.addEventListener('click', () => {
-        corrViewMode = 'split';
-        btnCorrViewSplit.classList.add('active');
-        btnCorrViewDual.classList.remove('active');
-        corrSplitCard.classList.remove('hidden');
-        corrDualLayout.classList.add('hidden');
-        requestAnimationFrame(drawSplitCorrelatorMatrix);
-      });
-      btnCorrViewDual.addEventListener('click', () => {
-        corrViewMode = 'dual';
-        btnCorrViewDual.classList.add('active');
-        btnCorrViewSplit.classList.remove('active');
-        corrSplitCard.classList.add('hidden');
-        corrDualLayout.classList.remove('hidden');
-        requestAnimationFrame(drawCorrelatorMatrices);
+    if (formRfiConfig) {
+      formRfiConfig.addEventListener('input', () => { rfiFormDirty = true; });
+      formRfiConfig.addEventListener('change', () => { rfiFormDirty = true; });
+    }
+    if (btnRfiApplyConfig) btnRfiApplyConfig.addEventListener('click', applyRfiConfig);
+    if (btnRfiResetEma) btnRfiResetEma.addEventListener('click', () => resetRfiEma(null));
+    if (btnRfiPrewhiten) btnRfiPrewhiten.addEventListener('click', pushPrewhiteningGains);
+
+    // Tab 3 Controls (SEFD, Sensitivity & Calibration)
+    if (calGlobalToggle) {
+      calGlobalToggle.addEventListener('change', () => {
+        toggleBeamCalibration(null, calGlobalToggle.checked);
       });
     }
 
-    document.querySelectorAll('#fringe-baseline-buttons .btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('#fringe-baseline-buttons .btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        fringeAntenna = parseInt(btn.getAttribute('data-ant'), 10);
-        inspectBaseline(0, fringeAntenna);
-        requestAnimationFrame(drawSplitCorrelatorMatrix);
-      });
-    });
-
-    document.querySelectorAll('#fringe-mode-buttons .btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('#fringe-mode-buttons .btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        fringeMode = btn.getAttribute('data-mode');
-        requestAnimationFrame(drawFringePlot);
-      });
-    });
-
-    if (btnInspectBaseline && baseAntAInput && baseAntBInput) {
-      btnInspectBaseline.addEventListener('click', () => {
-        const a = parseInt(baseAntAInput.value, 10);
-        const b = parseInt(baseAntBInput.value, 10);
-        if (!isNaN(a) && !isNaN(b) && a >= 0 && a < 64 && b >= 0 && b < 64) {
-          inspectBaseline(a, b);
-          requestAnimationFrame(drawSplitCorrelatorMatrix);
+    if (formReloadGains) {
+      formReloadGains.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const path = (calGainsInput ? calGainsInput.value : '').trim();
+        if (!path) {
+          showToast('Please enter a calibration gains file path', true);
+          return;
+        }
+        try {
+          const res = await fetch('/api/calibration/reload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              gains_file: path,
+              zero_flagged: !!(calZeroFlagged && calZeroFlagged.checked),
+              sync_rfi_notches: !!(calSyncNotches && calSyncNotches.checked)
+            })
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            showToast(`Reloaded gains${reply.converted ? ' (converted .npz → .npy)' : ''}`);
+          } else {
+            showToast(reply.detail || 'Failed to hot-reload gains', true);
+          }
+        } catch (err) {
+          showToast(err.message, true);
         }
       });
     }
 
-    if (corrSplitCanvas) {
-      function getMatrixCoords(e) {
-        const rect = corrSplitCanvas.getBoundingClientRect();
-        const cx = e.clientX - rect.left;
-        const cy = e.clientY - rect.top;
-        const pad = 28;
-        const side = Math.max(64, Math.min(rect.width, rect.height) - pad * 2);
-        const ox = Math.floor((rect.width - side) / 2);
-        const oy = Math.floor((rect.height - side) / 2);
-        if (cx < ox || cx > ox + side || cy < oy || cy > oy + side) return null;
-        const j = Math.min(63, Math.max(0, Math.floor(((cx - ox) / side) * 64)));
-        const i = Math.min(63, Math.max(0, Math.floor(((cy - oy) / side) * 64)));
-        return { i, j };
-      }
-
-      corrSplitCanvas.addEventListener('mousemove', (e) => {
-        if (!latestCorrelator || !corrSplitHoverEl) return;
-        const coords = getMatrixCoords(e);
-        if (!coords) return;
-        const { i, j } = coords;
-        if (i === j) {
-          const autoDb = latestCorrelator.auto_db ? latestCorrelator.auto_db[i] : '--';
-          corrSplitHoverEl.textContent = `Diagonal (i=${i}): Antenna #${i} Auto-Power = ${autoDb} dB`;
-        } else if (i < j) {
-          const coh = latestCorrelator.coherence_matrix ? latestCorrelator.coherence_matrix[i][j].toFixed(4) : '--';
-          corrSplitHoverEl.textContent = `Upper Triangle: Baseline (${i}, ${j}) Coherence |Γij| = ${coh} · Click to inspect 672-ch fringe`;
-        } else {
-          const ph = latestCorrelator.phase_matrix ? latestCorrelator.phase_matrix[i][j] : 0;
-          corrSplitHoverEl.textContent = `Lower Triangle: Baseline (${i}, ${j}) Phase φij = ${ph.toFixed(3)} rad (${((ph * 180) / Math.PI).toFixed(1)}°) · Click to inspect`;
+    if (formTaperConfig) {
+      formTaperConfig.addEventListener('input', () => { calTaperDirty = true; });
+      formTaperConfig.addEventListener('change', () => { calTaperDirty = true; });
+      formTaperConfig.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const payload = {
+          taper_type: taperTypeSelect ? taperTypeSelect.value : 'cosine_pedestal',
+          taper_pedestal: parseFloat(taperPedestalInput ? taperPedestalInput.value : '0.25'),
+          normalize_weights: !!(taperNormalizeWeights && taperNormalizeWeights.checked),
+          enable_weight_bislc: !!(taperWeightBislc && taperWeightBislc.checked),
+          bislc_diagonal_loading: parseFloat(taperBislcLoading ? taperBislcLoading.value : '0.0001')
+        };
+        try {
+          const res = await fetch('/api/taper', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const reply = await res.json();
+          if (res.ok) {
+            calTaperDirty = false;
+            showToast(reply.message || 'Spatial taper updated');
+          } else {
+            showToast(reply.detail || 'Failed to update taper', true);
+          }
+        } catch (err) {
+          showToast(err.message, true);
         }
-      });
-
-      corrSplitCanvas.addEventListener('click', (e) => {
-        const coords = getMatrixCoords(e);
-        if (!coords) return;
-        let a = Math.min(coords.i, coords.j);
-        let b = Math.max(coords.i, coords.j);
-        if (a === b) b = (a + 1) % 64;
-        inspectBaseline(a, b);
-        requestAnimationFrame(drawSplitCorrelatorMatrix);
-      });
-    }
-
-    if (corrBandpassCanvas) {
-      corrBandpassCanvas.addEventListener('mousemove', (e) => {
-        const rect = corrBandpassCanvas.getBoundingClientRect();
-        bandpassHover.active = true;
-        bandpassHover.cssX = e.clientX - rect.left;
-        requestAnimationFrame(drawBandpassSpectrum);
-      });
-      corrBandpassCanvas.addEventListener('mouseleave', () => {
-        bandpassHover.active = false;
-        requestAnimationFrame(drawBandpassSpectrum);
-      });
-    }
-
-    if (fringeCanvas) {
-      fringeCanvas.addEventListener('mousemove', (e) => {
-        const rect = fringeCanvas.getBoundingClientRect();
-        fringeHover.active = true;
-        fringeHover.cssX = e.clientX - rect.left;
-        requestAnimationFrame(drawFringePlot);
-      });
-      fringeCanvas.addEventListener('mouseleave', () => {
-        fringeHover.active = false;
-        requestAnimationFrame(drawFringePlot);
       });
     }
 
@@ -2747,8 +2341,8 @@
         const plotW = rect.width - padL - padR;
         const normX = (cssX - padL) / plotW;
         if (normX >= 0 && normX <= 1) {
-          const fMhz = 300.0 + normX * 201.6;
-          const spec = getAntennaSpectrum(selectedAntennaId);
+          const fMhz = 300.0 + normX * 201.3;
+          const spec = getAntennaSpectrum(selectedAntennaId, true);
           const idx = Math.min(spec.length - 1, Math.max(0, Math.round(normX * (spec.length - 1))));
           masterAntennaHoverInfo = { cssX };
           antMasterHover.textContent = `${fMhz.toFixed(2)} MHz | ${(spec[idx] || 0).toFixed(1)} dB`;
@@ -2808,7 +2402,7 @@
         if (idx >= 0 && latestAntennaMask && latestAntennaMask.antennas && antennaMaskHoverEl) {
           const ant = latestAntennaMask.antennas[idx];
           if (ant) {
-            antennaMaskHoverEl.textContent = `Antenna #${String(idx).padStart(2, '0')} [R${Math.floor(idx / 8)}C${idx % 8}] | ${ant.enabled ? 'ACTIVE' : 'MASKED'} | RMS: ${(ant.power_rms || 0).toFixed(2)} dB | Clip: ${((ant.clip_fraction || 0) * 100).toFixed(2)}% (Double-click to toggle mask)`;
+            antennaMaskHoverEl.textContent = `Antenna #${String(idx).padStart(2, '0')} [R${Math.floor(idx / 8)}C${idx % 8}] | ${ant.enabled ? 'ACTIVE' : 'MASKED'} | Pwr: ${(ant.power_rms || 0).toFixed(2)} LSB² | Clip: ${((ant.clip_fraction || 0) * 100).toFixed(2)}% (Double-click to toggle mask)`;
             antennaMaskHoverEl.classList.remove('hidden');
           }
         } else if (antennaMaskHoverEl) {
@@ -2827,6 +2421,7 @@
         const idx = getAntennaTileFromEvent(e);
         if (idx >= 0) {
           selectedAntennaId = idx;
+          refreshSelectedAntennaSpectrum();
           drawMasterAntennaSpectrometer();
           renderArrayGrid();
         }
@@ -2845,7 +2440,6 @@
   window.addEventListener('DOMContentLoaded', () => {
     initControls();
     initWebSocket();
-    inspectBaseline(0, 4);
+    refreshSelectedAntennaSpectrum();
   });
 })();
-

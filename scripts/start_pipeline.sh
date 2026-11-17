@@ -17,11 +17,7 @@ VIEWER_LOG="${VIEWER_DIR}/viewer.log"
 
 # Determine if config requires root privileges (e.g. DPDK vfio-pci)
 if grep -q "dpdkCore" "${CONFIG_FILE}" 2>/dev/null; then
-    if [[ -n "${SUDO_PASS:-}" ]]; then
-        RUN_CMD="echo '${SUDO_PASS}' | sudo -S"
-    else
-        RUN_CMD="sudo"
-    fi
+    RUN_CMD="sudo"
 else
     RUN_CMD=""
 fi
@@ -34,9 +30,13 @@ if [[ ! -x "${KOTEKAN_BIN}" ]]; then
 fi
 
 echo "[2/4] Cleaning stale hugepages & stopping old instances..."
-eval "${RUN_CMD} rm -f /dev/hugepages/rtemap_* 2>/dev/null" || true
-eval "${RUN_CMD} pkill -9 -f '${KOTEKAN_BIN}' 2>/dev/null" || true
-pkill -9 -f "${KOTEKAN_BIN}" 2>/dev/null || true
+if [[ -n "${RUN_CMD}" ]]; then
+    ${RUN_CMD} rm -f /dev/hugepages/rtemap_* 2>/dev/null || true
+    ${RUN_CMD} pkill -9 -f "${KOTEKAN_BIN}" 2>/dev/null || true
+else
+    rm -f /dev/hugepages/rtemap_* 2>/dev/null || true
+    pkill -9 -f "${KOTEKAN_BIN}" 2>/dev/null || true
+fi
 pkill -9 -f "uv run viewer" 2>/dev/null || true
 pkill -9 -f "python.*viewer" 2>/dev/null || true
 sleep 1
@@ -49,7 +49,7 @@ else
 fi
 
 echo "Waiting for Kotekan REST API on port 12048..."
-for i in {1..30}; do
+for _ in {1..30}; do
     if curl -s http://127.0.0.1:12048/direct_tracker/status >/dev/null 2>&1; then
         echo "  -> Kotekan REST API is UP!"
         break

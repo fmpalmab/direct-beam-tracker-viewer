@@ -16,11 +16,6 @@ if [[ -f "${VIEWER_DIR}/tools/verified_targets_10beams.json" ]]; then
 else
     TARGETS_CATALOG="${VIEWER_DIR}/verified_targets_10beams.json"
 fi
-if [[ -n "${SUDO_PASS:-}" ]]; then
-    SUDO_CMD="echo '${SUDO_PASS}' | sudo -S"
-else
-    SUDO_CMD="sudo"
-fi
 
 echo "[1/4] Checking environment..."
 if [[ ! -x "${KOTEKAN_BIN}" ]]; then
@@ -34,21 +29,21 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 fi
 
 echo "[2/4] Cleaning stale hugepages & stopping old instances..."
-eval "${SUDO_CMD} rm -f /dev/hugepages/rtemap_* 2>/dev/null" || true
-eval "${SUDO_CMD} pkill -9 -f '${KOTEKAN_BIN}' 2>/dev/null" || true
+sudo rm -f /dev/hugepages/rtemap_* 2>/dev/null || true
+sudo pkill -9 -f "${KOTEKAN_BIN}" 2>/dev/null || true
 pkill -9 -f "uv run viewer" 2>/dev/null || true
 pkill -9 -f "python.*viewer" 2>/dev/null || true
 sleep 1
 
 echo "[3/4] Starting Kotekan 10-Beam Direct Tracker in background..."
 if command -v screen >/dev/null 2>&1; then
-    screen -dmS kotekan bash -c "cd '${KOTEKAN_DIR}' && ${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
+    screen -dmS kotekan bash -c "cd '${KOTEKAN_DIR}' && sudo '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048 2>&1 | tee '${KOTEKAN_LOG}'"
 else
-    nohup bash -c "cd '${KOTEKAN_DIR}' && ${SUDO_CMD} '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
+    nohup bash -c "cd '${KOTEKAN_DIR}' && sudo '${KOTEKAN_BIN}' -c '${CONFIG_FILE}' -b 127.0.0.1:12048" > "${KOTEKAN_LOG}" 2>&1 &
 fi
 
 echo "Waiting for Kotekan REST API on port 12048..."
-for i in {1..20}; do
+for _ in {1..20}; do
     if curl -s http://127.0.0.1:12048/direct_tracker/status >/dev/null 2>&1; then
         echo "  -> Kotekan REST API is UP!"
         break

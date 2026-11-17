@@ -12,10 +12,14 @@ from viewer.client import TrackerClient, TrackerError
 from viewer.config import Settings
 from viewer.models import (
     BeamInfo,
+    CalibrationToggleRequest,
     CelestialRequest,
     EnableBeamsRequest,
     MaskAntennaRequest,
+    ReloadGainsRequest,
+    RfiConfigureRequest,
     Status,
+    TaperRequest,
     TargetRequest,
 )
 from viewer.poller import StatusPoller
@@ -43,7 +47,6 @@ def mock_status():
     )
 
 
-# --- client.py error handling ---
 @pytest.mark.asyncio
 async def test_client_error_handling():
     def handler(request: httpx.Request) -> httpx.Response:
@@ -70,6 +73,27 @@ async def test_client_error_handling():
     with pytest.raises(TrackerError):
         await client.set_interpolation(True)
 
+    with pytest.raises(TrackerError):
+        await client.configure_rfi(RfiConfigureRequest(enabled=False))
+
+    with pytest.raises(TrackerError):
+        await client.reset_rfi_ema()
+
+    with pytest.raises(TrackerError):
+        await client.set_rfi_gains(300.0e6, [1.0] * 336)
+
+    with pytest.raises(TrackerError):
+        await client.get_antenna_channel_power()
+
+    with pytest.raises(TrackerError):
+        await client.set_taper(TaperRequest(taper_type="none"))
+
+    with pytest.raises(TrackerError):
+        await client.set_calibration(CalibrationToggleRequest(enabled=False))
+
+    with pytest.raises(TrackerError):
+        await client.reload_gains("/data/g.npy")
+
 
 @pytest.mark.asyncio
 async def test_client_aclose_owns_client():
@@ -77,7 +101,6 @@ async def test_client_aclose_owns_client():
     await client.aclose()
 
 
-# --- models.py corner cases ---
 def test_models_validation_errors():
     from pydantic import ValidationError
 
@@ -105,6 +128,18 @@ def test_models_validation_errors():
     with pytest.raises(ValidationError):
         MaskAntennaRequest(antenna_id=-1, enabled=True)
 
+    with pytest.raises(ValidationError):
+        RfiConfigureRequest(static_notch_bands_mhz=[[400.0, 350.0]])
+
+    with pytest.raises(ValidationError):
+        RfiConfigureRequest(static_notch_bands_mhz=[[350.0]])
+
+    with pytest.raises(ValidationError):
+        TaperRequest(taper_type="bogus_window")
+
+    with pytest.raises(ValidationError):
+        ReloadGainsRequest(gains_file="")
+
 
 def test_models_aliases():
     req = TargetRequest(l=0.1, m=0.2)
@@ -112,21 +147,17 @@ def test_models_aliases():
     assert req.m0 == 0.2
 
 
-# --- poller.py corner cases ---
 @pytest.mark.asyncio
 async def test_poller_corner_cases(mock_status):
     client = AsyncMock(spec=TrackerClient)
     client.get_status.return_value = mock_status
     poller = StatusPoller(client=client, interval=0.2)
 
-    # test uptime
     assert poller.uptime_s >= 0.0
 
-    # start twice
     await poller.start()
     await poller.start()
 
-    # queue full/empty coverage
     q = poller.subscribe()
 
     def mock_put_nowait(*args, **kwargs):
@@ -143,12 +174,10 @@ async def test_poller_corner_cases(mock_status):
     q.get_nowait = mock_get_nowait
     poller._broadcast(mock_status)
 
-    # Sleep interrupted
     await asyncio.sleep(0.01)
     await poller.stop()
 
 
-# --- server.py corner cases ---
 def test_server_error_passthrough(mock_settings):
     def failing_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, text="Simulated kotekan error")
@@ -160,24 +189,48 @@ def test_server_error_passthrough(mock_settings):
     app = create_app(settings=mock_settings, client=client, poller=poller)
 
     with TestClient(app) as test_client:
-        res = test_client.post("/api/beams/0/target", json={"l0": 0.1, "m0": 0.1})
-        assert res.status_code == 400
-
-        res = test_client.post(
-            "/api/beams/0/celestial", json={"ra_deg": 10.0, "dec_deg": 10.0}
+        assert (
+            test_client.post(
+                "/api/beams/0/target", json={"l0": 0.1, "m0": 0.1}
+            ).status_code
+            == 400
         )
-        assert res.status_code == 400
-
-        res = test_client.post("/api/beams/enable", json={"num_active_beams": 4})
-        assert res.status_code == 400
-
-        res = test_client.post(
-            "/api/antennas/mask", json={"antenna_id": 1, "enabled": True}
+        assert (
+            test_client.post(
+                "/api/beams/0/celestial", json={"ra_deg": 10.0, "dec_deg": 10.0}
+            ).status_code
+            == 400
         )
-        assert res.status_code == 400
-
-        res = test_client.post("/api/interpolation", json={"enabled": True})
-        assert res.status_code == 400
+        assert (
+            test_client.post("/api/beams/enable", json={"num_active_beams": 4}).status_code
+            == 400
+        )
+        assert (
+            test_client.post(
+                "/api/antennas/mask", json={"antenna_id": 1, "enabled": True}
+            ).status_code
+            == 400
+        )
+        assert (
+            test_client.post("/api/interpolation", json={"enabled": True}).status_code
+            == 400
+        )
+        assert (
+            test_client.post("/api/rfi/configure", json={"enabled": False}).status_code
+            == 400
+        )
+        assert test_client.post("/api/rfi/reset_ema").status_code == 400
+        assert test_client.post("/api/taper", json={"taper_type": "none"}).status_code == 400
+        assert (
+            test_client.post("/api/calibration/toggle", json={"enabled": False}).status_code
+            == 400
+        )
+        assert (
+            test_client.post(
+                "/api/calibration/reload", json={"gains_file": "/data/cal.npy"}
+            ).status_code
+            == 400
+        )
 
 
 def test_server_creation_defaults():
@@ -195,32 +248,34 @@ def test_server_creation_defaults():
 
 
 def test_server_ws_mock(mock_settings, mock_status):
-    app = create_app(settings=mock_settings)
-    app.state.poller._latest = mock_status
+    app1 = create_app(settings=mock_settings)
+    app1.state.poller._latest = mock_status
     with (
         patch(
             "starlette.websockets.WebSocket.send_text",
             side_effect=Exception("mocked err"),
         ),
-        TestClient(app) as client,
+        TestClient(app1) as client,
         client.websocket_connect("/ws"),
     ):
         pass
 
-    app.state.poller._latest = None
+    app2 = create_app(settings=mock_settings)
+    app2.state.poller._latest = None
     with (
         patch(
             "starlette.websockets.WebSocket.receive_text",
             side_effect=Exception("mocked err"),
         ),
-        TestClient(app) as client,
+        TestClient(app2) as client,
         client.websocket_connect("/ws"),
     ):
         pass
 
+    app3 = create_app(settings=mock_settings)
     with (
         patch("asyncio.Queue.get", side_effect=RuntimeError("queue error")),
-        TestClient(app) as client,
+        TestClient(app3) as client,
         client.websocket_connect("/ws"),
     ):
         pass
@@ -239,7 +294,6 @@ def test_poller_cancel_loop():
     asyncio.run(run_poller())
 
 
-# --- __main__.py ---
 def test_main_cli():
     import sys
 
@@ -257,12 +311,10 @@ async def test_poller_queue_full_empty():
     poller = StatusPoller(client=client, interval=0.1)
     q = poller.subscribe()
 
-    # Queue full
     q.qsize = Mock(return_value=1)
     q.put_nowait = Mock(side_effect=asyncio.QueueFull)
     poller._broadcast(Status())
 
-    # Queue empty
     q.qsize = Mock(return_value=10)
     q.get_nowait = Mock(side_effect=asyncio.QueueEmpty)
     poller._broadcast(Status())

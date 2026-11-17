@@ -8,7 +8,14 @@ import httpx
 import pytest
 
 from viewer.client import TrackerClient, TrackerError
-from viewer.models import CelestialRequest, TargetRequest
+from viewer.models import (
+    CalibrationToggleRequest,
+    CelestialRequest,
+    RfiConfigureRequest,
+    RfiResetEmaRequest,
+    TaperRequest,
+    TargetRequest,
+)
 
 
 @pytest.mark.asyncio
@@ -17,6 +24,8 @@ async def test_get_status(mock_client: TrackerClient, mock_backend) -> None:
     assert status.active_antennas == 32
     assert status.num_active_beams == 2
     assert status.subframe_interpolation_enabled is True
+    assert status.taper_type == "cosine_pedestal"
+    assert status.gains_generation == 1
     assert len(status.beams) == 2
     assert status.beams[0].beam_id == 0
     assert status.beams[0].l0 == 0.1
@@ -187,17 +196,7 @@ async def test_get_beam_power(mock_client: TrackerClient, mock_backend) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_grid_beam_power(mock_client: TrackerClient, mock_backend) -> None:
-    bp = await mock_client.get_grid_beam_power()
-    assert bp.rest_prefix == "/grid_tracker"
-    assert bp.max_beams == 16
-    assert bp.enable_grid_mode is True
-    assert len(bp.beam_power) == 16
-    assert len(bp.beam_power[0]) == 672
-
-
-@pytest.mark.asyncio
-async def test_get_antenna_mask_status(
+async def test_get_antenna_mask_status_and_channel_power(
     mock_client: TrackerClient, mock_backend
 ) -> None:
     ams = await mock_client.get_antenna_mask_status()
@@ -206,6 +205,74 @@ async def test_get_antenna_mask_status(
     assert ams.blank_voltages_enabled is True
     assert len(ams.subbands) == 2
     assert len(ams.antennas) == 64
+
+    cp = await mock_client.get_antenna_channel_power()
+    assert cp.num_elements == 64
+    assert len(cp.subbands) == 2
+    assert cp.subbands[0].has_channel_power is True
+    assert len(cp.subbands[0].channel_power) == 336
+    assert len(cp.subbands[0].channel_power[0]) == 64
+
+
+@pytest.mark.asyncio
+async def test_rfi_endpoints(mock_client: TrackerClient, mock_backend) -> None:
+    rfi_st = await mock_client.get_rfi_status()
+    assert rfi_st.enabled is True
+    assert rfi_st.total_channels == 672
+    assert rfi_st.flagged_channels > 0
+
+    rfi_ch = await mock_client.get_rfi_channels()
+    assert rfi_ch.total_channels == 672
+    assert len(rfi_ch.channels) == 672
+
+    cfg_reply = await mock_client.configure_rfi(
+        RfiConfigureRequest(sk_sigma_threshold=5.5, enable_morphology_sir=False)
+    )
+    assert "updated" in cfg_reply.lower()
+    assert mock_backend.rfi_config["sk_sigma_threshold"] == 5.5
+    assert mock_backend.rfi_config["enable_morphology_sir"] is False
+
+    reset_all = await mock_client.reset_rfi_ema(RfiResetEmaRequest(all=True))
+    assert reset_all["mode"] == "all"
+
+    reset_sel = await mock_client.reset_rfi_ema(
+        RfiResetEmaRequest(freq_mhz=[414.0])
+    )
+    assert reset_sel["mode"] == "selective"
+    assert reset_sel["matched_channels"] == 1
+
+    gains_reply = await mock_client.set_rfi_gains(300.0e6, [1.0] * 336)
+    assert "336" in gains_reply
+    assert 300.0e6 in mock_backend.rfi_gains
+
+
+@pytest.mark.asyncio
+async def test_taper_calibration_and_reload(
+    mock_client: TrackerClient, mock_backend
+) -> None:
+    taper_reply = await mock_client.set_taper(
+        TaperRequest(taper_type="hamming", taper_pedestal=0.1, normalize_weights=False)
+    )
+    assert "hamming" in taper_reply
+    assert mock_backend.taper_type == "hamming"
+    assert mock_backend.normalize_weights is False
+
+    cal_reply = await mock_client.set_calibration(
+        CalibrationToggleRequest(enabled=False, beam_id=1)
+    )
+    assert "beam 1" in cal_reply
+    assert mock_backend.beams[1]["calibrated"] is False
+
+    cal_global = await mock_client.set_calibration(
+        CalibrationToggleRequest(enabled=False)
+    )
+    assert "False" in cal_global
+    assert mock_backend.apply_calibration_gains is False
+
+    reload_res = await mock_client.reload_gains("/data/cal/test_672x64.npy")
+    assert reload_res["status"] == "ok"
+    assert reload_res["gains_generation"] == 2
+    assert mock_backend.gains_file == "/data/cal/test_672x64.npy"
 
 
 @pytest.mark.asyncio
@@ -220,7 +287,6 @@ async def test_set_auto_detect(mock_client: TrackerClient, mock_backend) -> None
     payload = json.loads(last_req["body"])
     assert payload == {"auto_detect_enabled": False}
 
-    # Re-enable
     reply2 = await mock_client.set_auto_detect(True)
     assert "updated successfully" in reply2
     assert mock_backend.auto_detect_enabled is True

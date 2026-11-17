@@ -1,57 +1,42 @@
 # Direct Beam Tracker Viewer
 
-A lightweight web viewer and control panel for the **Kotekan Direct Beam Tracker**
-(`cudaDirectBeamTrackerCommand` stage). It talks to a running kotekan instance
-**exclusively through its REST API** — no binary coupling, no shared memory.
+A lightweight web viewer and observatory control plane for the **Kotekan Direct Beam Tracker** pipeline (`cudaAntennaMaskCommand` -> `cudaRfiMitigationCommand` -> `cudaDirectBeamTrackerCommand`), integrated with **CHARTS SEFD/sensitivity modeling** (`charts-sefd`) and **complex gain calibration export** (`charts-utils`).
 
-The viewer lets an operator:
+The viewer talks to a running Kotekan instance **exclusively through its REST API** — no binary coupling, no shared memory.
 
-- See the live state of all beams (`GET /direct_tracker/status`): pointing
-  direction (l, m, n), celestial target (RA/Dec), grid index, active antennas.
-- Steer any beam by direction cosines or by RA/Dec celestial target.
-- Enable/disable beams, mask/unmask antennas, toggle phase interpolation.
-- Plot beam pointings on a sky (l, m) map with recent trails.
-- Inspect the real-time line spectrometer of the output formed beams (Power in dB vs Frequency in MHz) at 1 Hz cadence, matching the CHARTS F-Engine web dashboard with interactive zoom, crosshair, and peak tracking.
+## Key Capabilities
 
-Designed to be **gentle on the processing node**: a single server-side poller
-queries kotekan at 2 Hz and fans out to any number of browsers over WebSocket.
+1. **Direct Astrometric Tracker (Tab 1)**:
+   - Live beam status (`GET /direct_tracker/status`): direction cosines `(l0, m0, n0)`, celestial targets `(RA, Dec)`, active physical/raw antennas, LST, and seam/phase rates.
+   - Steer any beam (`1..16` active beams) by direction cosines or J2000 RA/Dec, toggle subframe phase interpolation, and view live 672-channel line spectra & synchronized 90-step waterfalls.
+2. **Real-Time RFI Mitigation (Tab 2 · `cudaRfiMitigationCommand`)**:
+   - Live 672-channel RFI diagnostics canvas (`GET /rfi_mitigation/channels`) displaying channel power (`LSB²`), Spectral Kurtosis (`SK`), passband `freq_mad_z`, static notch bands, and dynamic flag masks (`GET /rfi_mitigation/status`).
+   - Live controls for detector toggles and thresholds (`POST /rfi_mitigation/configure`), selective/global EMA baseline reset (`POST /rfi_mitigation/reset_ema`), and one-click passband pre-whitening gain push (`POST /rfi_mitigation/set_gains`).
+3. **SEFD, Sensitivity & Calibration (Tab 3 · `charts-sefd` & `charts-utils`)**:
+   - Live 4-bit F-engine quantizer diagnostics (`sigma` [LSB], `eta_q`, `q_rms`, optimal window compliance) derived from clean channel power.
+   - Elevation-corrected tied-array `SEFD_beam` (from nominal zenith `SEFD_0 = 721 kJy`), RFI-aware clean bandwidth `dnu_clean = 201.6 MHz * (1 - f_rfi)`, 1s continuum noise floor `sigma_S` [Jy], and 10-sigma 1ms FRB fluence limit `F_min` [Jy ms].
+   - Calibration hot-reload accepting either `charts-utils` `.npz` gain solutions (automatically converted to `(672, 64)` `complex64` `.npy`, with optional `zero_flagged` and `sync_rfi_notches`) or `.npy` tables (`POST /direct_tracker/reload_gains`), A/B global & per-beam calibration toggles (`POST /direct_tracker/set_calibration`), and 2D spatial taper controls (`POST /direct_tracker/set_taper`).
+4. **8×8 Array Health & Masking (Tab 4 · `cudaAntennaMaskCommand`)**:
+   - Real-time 64-element health grid and per-antenna 672-channel / 84-bin spectra polled directly from `GET /antenna_mask/status` and `GET /antenna_mask/channel_power` without requiring a correlator.
 
-## Observation routine
+Designed to be **gentle on the processing node**: a single server-side `StatusPoller` queries Kotekan at 1–4 Hz and fans out to any number of browsers over `/ws` WebSocket.
 
-`--routine` runs a precomputed observation script on top of the tracker:
-**4 output beams, always owned by the 4 highest-elevation targets** from the
-verified catalog (`tools/verified_targets.json`, 25 SIMBAD-verified sources
-for the Carén site). No live sky math at observation time — the set-hour
-schedule is generated once at startup from the catalog's transit times, and a
-background task only fires REST calls when the wall clock crosses each slot:
+## Observation Routine
+
+`--routine` runs a precomputed observation script on top of the tracker using `tools/verified_targets_10beams.json` (SIMBAD-verified sources for the Carén site):
 
 ```bash
 uv run viewer --kotekan http://localhost:12048 --port 8088 \
-  --routine --routine-targets ../tools/verified_targets.json
+  --routine --routine-targets tools/verified_targets_10beams.json
 ```
 
-- At each set hour (default 60 min steps) every beam is re-pointed via
-  `POST /direct_tracker/set_celestial_target` and the beam name map
-  (`beam_id -> target`) is updated and pushed to the UI over WebSocket.
-- Beam assignments are stable between slots: a target keeps its beam until it
-  drops out of the top 4; newcomers take freed beams.
-- Kotekan converts RA/Dec to direction cosines once per command, so each slot
-  re-point also refreshes tracking; use `--routine-step-minutes 30` to halve
-  the between-slot drift.
-- The schedule is valid for the catalog's date (`2026-10-07`); transit times
-drift ~4 min/day with the sidereal rate — regenerate
-`tools/verified_targets.json` for other dates.
-- If kotekan is down, the runner retries every 30 s and surfaces the error in
-  the header badge and `GET /api/routine`.
+- At each set hour (default 60 min steps), beams are re-pointed via `POST /direct_tracker/set_celestial_target` and target labels are pushed over `/ws`.
+- Routine endpoints: `GET /api/routine`, `GET /api/routine/schedule`, `POST /api/routine/apply` (see [docs/API.md](docs/API.md)).
 
-Routine endpoints: `GET /api/routine` (live state),
-`GET /api/routine/schedule` (full set-hour table), `POST /api/routine/apply`
-(force re-point now) — see [docs/API.md](docs/API.md).
-
-## Quick start (uv)
+## Quick Start (`uv`)
 
 ```bash
-# 1. kotekan must be running with the direct beam tracker stage loaded.
+# 1. Start Kotekan with cudaAntennaMaskCommand, cudaRfiMitigationCommand, and cudaDirectBeamTrackerCommand
 #    REST server default: http://localhost:12048
 
 # 2. On the processing node, from this directory:
@@ -60,17 +45,10 @@ uv run viewer --kotekan http://localhost:12048 --port 8088
 
 # 3. On each operator PC, forward the port and open the browser:
 ssh -L 8088:localhost:8088 user@processing-node
-#    → http://localhost:8088
+#    -> http://localhost:8088
 ```
 
-Full setup, multi-PC access, and LAN option: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-
-## Scope
-
-This repo contains **only the viewer** (frontend + thin REST client backend).
-The beamformer itself lives in the kotekan repo
-(`kotekan-direct-beamformer/lib/cuda/`). All control flows through the
-endpoints documented in [docs/API.md](docs/API.md).
+Full setup, multi-PC access, and LAN options: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Layout
 
@@ -78,14 +56,18 @@ endpoints documented in [docs/API.md](docs/API.md).
 direct-beam-tracker-viewer/
 ├── pyproject.toml         # uv project (deps + `viewer` entry point)
 ├── docs/
-│   ├── PLANNING.md        # Executable implementation spec (for coding AI)
-│   ├── API.md             # REST endpoint reference (confirmed vs kotekan source)
+│   ├── PLANNING.md        # Architecture & implementation spec
+│   ├── API.md             # Kotekan & Viewer REST/WebSocket reference
 │   └── DEPLOYMENT.md      # Setup, SSH tunnel, multi-PC access
 ├── src/viewer/
-│   ├── server.py          # FastAPI app: proxies/aggregates kotekan REST, serves static
-│   ├── client.py          # Typed async client for the tracker endpoints
-│   ├── poller.py          # Single 2 Hz status poller + ring buffer + WS broadcast
-│   └── static/            # Frontend (HTML/JS canvas sky map, controls — no build step)
+│   ├── server.py          # FastAPI app: proxies/aggregates REST, serves static & WS
+│   ├── client.py          # Typed async client for Kotekan tracker/RFI/mask endpoints
+│   ├── models.py          # Pydantic v2 telemetry & control schemas
+│   ├── poller.py          # Single background poller + ring buffer + WS broadcast
+│   ├── sefd_utils.py      # charts-sefd & charts-utils integration + analytical fallbacks
+│   ├── spectrometer.py    # 672-ch formed beam spectrometer processor
+│   ├── routine.py         # Precomputed observation routine scheduler
+│   └── static/            # Vanilla HTML/JS/CSS canvas dashboard (no build step)
 └── tests/
 ```
 
@@ -93,5 +75,6 @@ direct-beam-tracker-viewer/
 
 ```bash
 uv sync --dev
+uv run ruff check .
 uv run pytest tests/ -q
 ```

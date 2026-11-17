@@ -1,4 +1,4 @@
-"""Background poller for kotekan status and formed beams line spectrometer."""
+"""Background pollers for kotekan status, formed-beam spectrometer, RFI, SEFD, and antenna masks."""
 
 from __future__ import annotations
 
@@ -14,34 +14,49 @@ import numpy as np
 
 from .client import TrackerClient, TrackerError
 from .models import (
+    AntennaChannelPowerResponse,
     AntennaMaskStatus,
     AntennaMetricItem,
     BeamPowerResponse,
     BeamSample,
-    CorrelatorDiagnostics,
-    SkyGridFrame,
+    RfiChannelItem,
+    RfiChannelsResponse,
+    RfiStatus,
+    RfiTopChannel,
+    SefdSensitivitySummary,
     SpectrometerData,
     Status,
+)
+from .sefd_utils import (
+    CHANNEL_WIDTH_MHZ,
+    N_CHAN_SUBBAND,
+    N_CHAN_TOTAL,
+    RFI_FREQ_MAD,
+    RFI_SK_CW_TONE,
+    RFI_SK_IMPULSIVE,
+    RFI_STATIC_NOTCH,
+    RFI_TIME_BURST,
+    SUBBAND0_START_HZ,
+    SUBBAND1_START_HZ,
+    compute_sefd_summary,
 )
 from .spectrometer import (
     FREQUENCIES_ALL_MHZ,
     SpectrometerProcessor,
-    compute_correlator_diagnostics,
-    format_sky_grid_frame,
-    unpack_astron_visibilities,
+    power_to_db,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class StatusPoller:
-    """Polls kotekan /direct_tracker/status and inspection buffers.
+    """Polls kotekan /direct_tracker, /rfi_mitigation, and /antenna_mask REST endpoints.
 
     - Status telemetry: default 2 Hz (0.5 s cadence).
+    - Direct beam power: 4 Hz (0.25 s cadence).
     - Output beams spectrometer: default 1 Hz (1.0 s cadence).
-    - Beam power (direct & grid): 4 Hz (0.25 s cadence).
-    - Antenna mask and correlator visibilities: 1 Hz (1.0 s cadence).
-    Maintains ring buffer history of (l, m) tracks and broadcasts updates to WebSocket queues.
+    - RFI mitigation & live SEFD/sensitivity: 1 Hz (1.0 s cadence).
+    - Antenna mask & 672-ch per-antenna channel power: 1 Hz (1.0 s cadence).
     """
 
     def __init__(
@@ -57,33 +72,35 @@ class StatusPoller:
         self.interval = max(0.2, interval)
         self.spectrometer_interval = max(0.2, spectrometer_interval)
         self.beam_power_interval = 0.25  # 4 Hz
-        self.correlator_interval = 1.0  # 1 Hz
+        self.rfi_interval = 1.0  # 1 Hz
+        self.antenna_mask_interval = 1.0  # 1 Hz
         self.history_len = history
         self.spectrometer_processor = spectrometer_processor or SpectrometerProcessor()
-        # Optional beam_id -> target label map (e.g. from the observation routine)
         self.beam_name_provider = beam_name_provider
 
         self._latest: Status | None = None
         self._latest_spectrometer: SpectrometerData | None = None
         self._latest_direct_beam_power: BeamPowerResponse | None = None
-        self._latest_grid: SkyGridFrame | None = None
-        self._latest_correlator: CorrelatorDiagnostics | None = None
+        self._latest_rfi_status: RfiStatus | None = None
+        self._latest_rfi_channels: RfiChannelsResponse | None = None
+        self._latest_sefd: SefdSensitivitySummary | None = None
         self._latest_antenna_mask: AntennaMaskStatus | None = None
-        self._latest_vis_cube: np.ndarray | None = None
+        self._latest_antenna_spectra_db: list[list[float]] = []
 
         self._history: dict[int, deque[BeamSample]] = defaultdict(
             lambda: deque(maxlen=self.history_len)
         )
         self._subscribers: set[asyncio.Queue[Status]] = set()
         self._spectrometer_subscribers: set[asyncio.Queue[SpectrometerData]] = set()
-        self._grid_subscribers: set[asyncio.Queue[SkyGridFrame]] = set()
-        self._correlator_subscribers: set[asyncio.Queue[CorrelatorDiagnostics]] = set()
+        self._rfi_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._sefd_subscribers: set[asyncio.Queue[SefdSensitivitySummary]] = set()
         self._antenna_mask_subscribers: set[asyncio.Queue[AntennaMaskStatus]] = set()
 
         self._task: asyncio.Task[None] | None = None
         self._spectrometer_task: asyncio.Task[None] | None = None
         self._beam_power_task: asyncio.Task[None] | None = None
-        self._correlator_mask_task: asyncio.Task[None] | None = None
+        self._rfi_task: asyncio.Task[None] | None = None
+        self._antenna_mask_task: asyncio.Task[None] | None = None
         self._running: bool = False
         self.healthy: bool = False
         self._logged_error: bool = False
@@ -106,61 +123,82 @@ class StatusPoller:
         """Return most recently fetched BeamPowerResponse for direct tracker."""
         return self._latest_direct_beam_power
 
-    def grid_latest(self) -> SkyGridFrame | None:
-        """Return most recently formatted SkyGridFrame."""
-        return self._latest_grid
+    def rfi_latest(self) -> RfiStatus | None:
+        """Return most recently fetched RfiStatus."""
+        return self._latest_rfi_status
 
-    def correlator_latest(self) -> CorrelatorDiagnostics | None:
-        """Return most recently computed CorrelatorDiagnostics."""
-        return self._latest_correlator
+    def rfi_channels_latest(self) -> RfiChannelsResponse | None:
+        """Return most recently fetched RfiChannelsResponse."""
+        return self._latest_rfi_channels
 
-    def latest_vis_cube(self) -> np.ndarray | None:
-        """Return most recent (672, 64, 64) complex visibility cube if available."""
-        return self._latest_vis_cube
-
-    def get_baseline_spectrum(self, ant_i: int, ant_j: int) -> dict[str, Any]:
-        """Return 672-channel complex visibility spectrum and delay fit for baseline (ant_i, ant_j)."""
-        ant_i = max(0, min(63, int(ant_i)))
-        ant_j = max(0, min(63, int(ant_j)))
-        if self._latest_vis_cube is not None and self._latest_vis_cube.shape[0] >= 672:
-            vis = self._latest_vis_cube[:, ant_i, ant_j]
-        else:
-            # Synthetic realistic interferometer baseline with geometric delay
-            n_f = len(FREQUENCIES_ALL_MHZ)
-            freqs = np.array(FREQUENCIES_ALL_MHZ, dtype=np.float64)
-            tau_ns = (ant_i - ant_j) * 0.354
-            phase = (2.0 * np.pi * (freqs - 300.0) * 1e6 * (tau_ns * 1e-9)) % (2 * np.pi) - np.pi
-            rng = np.random.default_rng(ant_i * 64 + ant_j)
-            amp = 0.5 + 0.3 * np.cos(np.linspace(0, 4 * np.pi, n_f)) + rng.normal(0, 0.05, n_f)
-            amp = np.clip(amp, 0.01, 1.0)
-            vis = (amp * np.exp(1j * phase)).astype(np.complex64)
-
-        amp_arr = np.abs(vis)
-        phase_arr = np.angle(vis)
-
-        # Estimate delay tau from phase gradient: dphi/df / (2*pi)
-        if len(FREQUENCIES_ALL_MHZ) > 1:
-            unwrapped = np.unwrap(phase_arr)
-            df_hz = (FREQUENCIES_ALL_MHZ[-1] - FREQUENCIES_ALL_MHZ[0]) * 1e6
-            dphi = unwrapped[-1] - unwrapped[0]
-            delay_ns = float(dphi / (2 * np.pi * max(1.0, df_hz)) * 1e9)
-        else:
-            delay_ns = 0.0
-
+    def rfi_bundle_latest(self) -> dict[str, Any] | None:
+        """Return combined RFI status + channels dict for WebSocket snapshots."""
+        if self._latest_rfi_status is None:
+            return None
         return {
-            "antenna_a": ant_i,
-            "antenna_b": ant_j,
-            "frequencies_mhz": FREQUENCIES_ALL_MHZ,
-            "amplitude": np.round(amp_arr, 4).tolist(),
-            "phase_rad": np.round(phase_arr, 4).tolist(),
-            "real": np.round(vis.real, 4).tolist(),
-            "imag": np.round(vis.imag, 4).tolist(),
-            "delay_ns": round(delay_ns, 3),
+            "status": self._latest_rfi_status.model_dump(),
+            "channels": (
+                self._latest_rfi_channels.model_dump()
+                if self._latest_rfi_channels is not None
+                else {"total_channels": 0, "channels": []}
+            ),
         }
+
+    def sefd_latest(self) -> SefdSensitivitySummary | None:
+        """Return most recently computed SefdSensitivitySummary."""
+        return self._latest_sefd
 
     def antenna_mask_latest(self) -> AntennaMaskStatus | None:
         """Return most recently fetched AntennaMaskStatus."""
         return self._latest_antenna_mask
+
+    def antenna_spectrum(self, antenna_id: int) -> dict[str, Any]:
+        """Return per-antenna spectrum from cudaAntennaMaskCommand channel_power."""
+        aid = max(0, min(63, int(antenna_id)))
+        spec: list[float] = []
+        if (
+            self._latest_antenna_spectra_db
+            and aid < len(self._latest_antenna_spectra_db)
+            and len(self._latest_antenna_spectra_db[aid]) > 0
+        ):
+            spec = self._latest_antenna_spectra_db[aid]
+        elif (
+            self._latest_antenna_mask is not None
+            and aid < len(self._latest_antenna_mask.antennas)
+            and len(self._latest_antenna_mask.antennas[aid].spectrum_db) > 0
+        ):
+            spec = self._latest_antenna_mask.antennas[aid].spectrum_db
+        else:
+            rng = np.random.default_rng(aid + 42)
+            base_db = 4.8 + 1.5 * np.sin(np.linspace(0, 3 * np.pi, N_CHAN_TOTAL))
+            spec = np.round(base_db + rng.normal(0, 0.25, N_CHAN_TOTAL), 2).tolist()
+
+        peak_idx = int(np.argmax(spec)) if len(spec) > 0 else 0
+        peak_pwr = float(spec[peak_idx]) if len(spec) > 0 else 0.0
+        mean_pwr = float(np.mean(spec)) if len(spec) > 0 else 0.0
+
+        if len(spec) == len(FREQUENCIES_ALL_MHZ):
+            freqs = FREQUENCIES_ALL_MHZ
+        else:
+            freqs = [
+                round(300.0 + i * (201.6 / max(1, len(spec) - 1)), 2)
+                for i in range(len(spec))
+            ]
+
+        phys_id: int | None = None
+        if self._latest_antenna_mask and aid < len(self._latest_antenna_mask.antennas):
+            phys_id = self._latest_antenna_mask.antennas[aid].physical_id
+
+        return {
+            "antenna_id": aid,
+            "physical_id": phys_id,
+            "frequencies_mhz": freqs,
+            "spectrum_db": spec,
+            "num_channels": len(spec),
+            "peak_freq_mhz": freqs[peak_idx] if peak_idx < len(freqs) else 300.0,
+            "peak_power_db": round(peak_pwr, 2),
+            "mean_power_db": round(mean_pwr, 2),
+        }
 
     def history(self, beam_id: int) -> list[BeamSample]:
         """Return history slice for the given beam_id."""
@@ -196,25 +234,25 @@ class StatusPoller:
         """Unsubscribe a WebSocket client spectrometer queue."""
         self._spectrometer_subscribers.discard(q)
 
-    def subscribe_grid(self) -> asyncio.Queue[SkyGridFrame]:
-        """Subscribe a new WebSocket client for 4x4 SkyGridFrame updates."""
-        q: asyncio.Queue[SkyGridFrame] = asyncio.Queue(maxsize=10)
-        self._grid_subscribers.add(q)
+    def subscribe_rfi(self) -> asyncio.Queue[dict[str, Any]]:
+        """Subscribe a new WebSocket client for RFI mitigation updates."""
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10)
+        self._rfi_subscribers.add(q)
         return q
 
-    def unsubscribe_grid(self, q: asyncio.Queue[SkyGridFrame]) -> None:
-        """Unsubscribe a WebSocket client grid queue."""
-        self._grid_subscribers.discard(q)
+    def unsubscribe_rfi(self, q: asyncio.Queue[dict[str, Any]]) -> None:
+        """Unsubscribe a WebSocket client RFI queue."""
+        self._rfi_subscribers.discard(q)
 
-    def subscribe_correlator(self) -> asyncio.Queue[CorrelatorDiagnostics]:
-        """Subscribe a new WebSocket client for CorrelatorDiagnostics updates."""
-        q: asyncio.Queue[CorrelatorDiagnostics] = asyncio.Queue(maxsize=10)
-        self._correlator_subscribers.add(q)
+    def subscribe_sefd(self) -> asyncio.Queue[SefdSensitivitySummary]:
+        """Subscribe a new WebSocket client for SEFD/sensitivity updates."""
+        q: asyncio.Queue[SefdSensitivitySummary] = asyncio.Queue(maxsize=10)
+        self._sefd_subscribers.add(q)
         return q
 
-    def unsubscribe_correlator(self, q: asyncio.Queue[CorrelatorDiagnostics]) -> None:
-        """Unsubscribe a WebSocket client correlator queue."""
-        self._correlator_subscribers.discard(q)
+    def unsubscribe_sefd(self, q: asyncio.Queue[SefdSensitivitySummary]) -> None:
+        """Unsubscribe a WebSocket client SEFD queue."""
+        self._sefd_subscribers.discard(q)
 
     def subscribe_antenna_mask(self) -> asyncio.Queue[AntennaMaskStatus]:
         """Subscribe a new WebSocket client for AntennaMaskStatus updates."""
@@ -227,7 +265,7 @@ class StatusPoller:
         self._antenna_mask_subscribers.discard(q)
 
     async def start(self) -> None:
-        """Start status, beam power, spectrometer, and correlator/mask background polling tasks."""
+        """Start status, beam power, spectrometer, RFI/SEFD, and antenna mask polling tasks."""
         if self._running:
             return
         self._running = True
@@ -238,8 +276,9 @@ class StatusPoller:
         self._spectrometer_task = asyncio.create_task(
             self._spectrometer_loop(), name="spectrometer-poller"
         )
-        self._correlator_mask_task = asyncio.create_task(
-            self._correlator_mask_loop(), name="correlator-mask-poller"
+        self._rfi_task = asyncio.create_task(self._rfi_loop(), name="rfi-sefd-poller")
+        self._antenna_mask_task = asyncio.create_task(
+            self._antenna_mask_loop(), name="antenna-mask-poller"
         )
 
     async def stop(self) -> None:
@@ -251,7 +290,8 @@ class StatusPoller:
                 self._task,
                 self._beam_power_task,
                 self._spectrometer_task,
-                self._correlator_mask_task,
+                self._rfi_task,
+                self._antenna_mask_task,
             )
             if t is not None
         ]
@@ -265,7 +305,8 @@ class StatusPoller:
         self._task = None
         self._beam_power_task = None
         self._spectrometer_task = None
-        self._correlator_mask_task = None
+        self._rfi_task = None
+        self._antenna_mask_task = None
 
     async def _poll_loop(self) -> None:
         """Continuous status polling loop (default 2 Hz)."""
@@ -273,6 +314,8 @@ class StatusPoller:
             t0 = time.monotonic()
             try:
                 status = await self.client.get_status()
+                if not isinstance(status, Status):
+                    raise TypeError("Invalid status payload from client")
                 now = time.time()
 
                 self._latest = status
@@ -281,12 +324,10 @@ class StatusPoller:
                 self.healthy = True
                 self._logged_error = False
 
-                # Update history ring buffers
                 for beam in status.beams:
                     sample = BeamSample(ts=now, l0=beam.l0, m0=beam.m0)
                     self._history[beam.beam_id].append(sample)
 
-                # Fan out to status subscribers
                 self._broadcast(status)
 
             except asyncio.CancelledError:
@@ -305,26 +346,17 @@ class StatusPoller:
                 break
 
     async def _beam_power_loop(self) -> None:
-        """4 Hz (0.25 s) loop polling direct tracker beam power and 16-beam sky grid camera."""
+        """4 Hz (0.25 s) loop polling direct tracker beam power."""
         while self._running:
             t0 = time.monotonic()
-            # 1. Direct tracker beam power
             try:
                 direct_bp = await self.client.get_beam_power("/direct_tracker")
-                self._latest_direct_beam_power = direct_bp
+                if isinstance(direct_bp, BeamPowerResponse):
+                    self._latest_direct_beam_power = direct_bp
+            except asyncio.CancelledError:
+                break
             except Exception:
                 pass
-
-            # 2. Grid tracker beam power (4x4 sky grid camera)
-            try:
-                grid_bp = await self.client.get_grid_beam_power()
-                grid_frame = format_sky_grid_frame(grid_bp.beam_power)
-                self._latest_grid = grid_frame
-                self._broadcast_grid(grid_frame)
-            except Exception:
-                grid_frame = format_sky_grid_frame(None)
-                self._latest_grid = grid_frame
-                self._broadcast_grid(grid_frame)
 
             elapsed = time.monotonic() - t0
             sleep_time = max(0.01, self.beam_power_interval - elapsed)
@@ -338,21 +370,19 @@ class StatusPoller:
         while self._running:
             t0 = time.monotonic()
             try:
-                # 1. Fetch inspection frames from both streams concurrently (if available)
                 buf_0, buf_1 = await asyncio.gather(
                     self.client.get_inspect_frame("host_formed_beams_buffer_0"),
                     self.client.get_inspect_frame("host_formed_beams_buffer_1"),
                 )
 
-                # 2. Process into calibrated power spectra
                 configured_beams = (
                     len(self._latest.beams)
                     if (self._latest and self._latest.beams)
                     else 2
                 )
                 spec_data = self.spectrometer_processor.process(
-                    buf_0=buf_0,
-                    buf_1=buf_1,
+                    buf_0=buf_0 if isinstance(buf_0, bytes) else None,
+                    buf_1=buf_1 if isinstance(buf_1, bytes) else None,
                     status=self._latest,
                     max_beams=configured_beams,
                     beam_names=self.beam_name_provider()
@@ -364,8 +394,6 @@ class StatusPoller:
                     else None,
                 )
                 self._latest_spectrometer = spec_data
-
-                # 3. Fan out to spectrometer subscribers
                 self._broadcast_spectrometer(spec_data)
 
             except asyncio.CancelledError:
@@ -386,19 +414,168 @@ class StatusPoller:
             except asyncio.CancelledError:
                 break
 
+    def _make_synthetic_rfi(self) -> tuple[RfiStatus, RfiChannelsResponse]:
+        """Generate realistic 672-ch RFI telemetry when Kotekan is offline."""
+        rng = np.random.default_rng(108)
+        items: list[RfiChannelItem] = []
+        flagged_items: list[RfiTopChannel] = []
+        sum_frac = 0.0
+
+        for i in range(N_CHAN_TOTAL):
+            sb = 0 if i < N_CHAN_SUBBAND else 1
+            lch = i if sb == 0 else (i - N_CHAN_SUBBAND)
+            f0 = SUBBAND0_START_HZ if sb == 0 else SUBBAND1_START_HZ
+            freq_mhz = round((f0 * 1.0e-6) + lch * CHANNEL_WIDTH_MHZ, 3)
+
+            # Smooth bandpass centered at ~3.06 LSB^2 (sigma ~ 1.70 LSB, eta_q ~ 0.972)
+            band_shape = 3.05 + 0.45 * np.sin(2.0 * np.pi * i / 280.0)
+            mean_pwr = float(max(0.4, band_shape + rng.normal(0.0, 0.06)))
+            mean_sk = float(np.clip(1.0 + rng.normal(0.0, 0.03), 0.75, 1.35))
+            max_sk = float(mean_sk + abs(rng.normal(0.05, 0.03)))
+            mad_z = float(rng.normal(0.0, 0.4))
+            frac = 0.0
+            bits = 0
+
+            if 362.0 <= freq_mhz <= 378.0:
+                bits = RFI_STATIC_NOTCH
+                frac = 1.0
+                mean_pwr *= 1.4
+            elif abs(freq_mhz - 414.0) < 0.2:
+                bits = RFI_SK_CW_TONE | RFI_FREQ_MAD
+                mean_sk = 0.14
+                max_sk = 0.28
+                mad_z = 16.5
+                frac = 1.0
+                mean_pwr = 14.2
+            elif abs(freq_mhz - 382.2) < 0.2:
+                bits = RFI_SK_IMPULSIVE | RFI_TIME_BURST
+                mean_sk = 2.65
+                max_sk = 4.9
+                mad_z = 7.4
+                frac = 0.42
+                mean_pwr = 8.9
+
+            sum_frac += frac
+            item = RfiChannelItem(
+                freq_mhz=freq_mhz,
+                subband=sb,
+                local_channel=lch,
+                mean_power=round(mean_pwr, 4),
+                mean_sk=round(mean_sk, 4),
+                max_sk=round(max_sk, 4),
+                freq_mad_z=round(mad_z, 3),
+                flagged_chunk_fraction=round(frac, 4),
+                flag_bits=bits,
+                gain=1.0,
+            )
+            items.append(item)
+            if bits != 0:
+                flagged_items.append(
+                    RfiTopChannel(
+                        freq_mhz=item.freq_mhz,
+                        mean_power=item.mean_power,
+                        mean_sk=item.mean_sk,
+                        max_sk=item.max_sk,
+                        freq_mad_z=item.freq_mad_z,
+                        flagged_chunk_fraction=item.flagged_chunk_fraction,
+                        flag_bits=item.flag_bits,
+                    )
+                )
+
+        flagged_items.sort(
+            key=lambda x: (x.flagged_chunk_fraction, x.max_sk), reverse=True
+        )
+        rfi_status = RfiStatus(
+            enabled=True,
+            blank_voltages_enabled=True,
+            static_notch_bands_mhz=[[362.0, 378.0]],
+            total_channels=len(items),
+            flagged_channels=len(flagged_items),
+            overall_flagged_chunk_fraction=round(sum_frac / len(items), 5),
+            top_rfi_channels=flagged_items[:20],
+        )
+        rfi_channels = RfiChannelsResponse(
+            total_channels=len(items),
+            channels=items,
+        )
+        return rfi_status, rfi_channels
+
+    async def _rfi_loop(self) -> None:
+        """1 Hz loop polling RFI mitigation telemetry and computing live SEFD/sensitivity."""
+        while self._running:
+            t0 = time.monotonic()
+            try:
+                res_status, res_channels = await asyncio.gather(
+                    self.client.get_rfi_status(),
+                    self.client.get_rfi_channels(),
+                    return_exceptions=True,
+                )
+                rfi_status = (
+                    res_status if isinstance(res_status, RfiStatus) else None
+                )
+                rfi_channels = (
+                    res_channels
+                    if isinstance(res_channels, RfiChannelsResponse)
+                    and len(res_channels.channels) > 0
+                    else None
+                )
+
+                if rfi_status is None or rfi_channels is None:
+                    syn_status, syn_channels = self._make_synthetic_rfi()
+                    if rfi_status is None:
+                        rfi_status = syn_status
+                    if rfi_channels is None:
+                        rfi_channels = syn_channels
+
+                self._latest_rfi_status = rfi_status
+                self._latest_rfi_channels = rfi_channels
+
+                sefd_summary = compute_sefd_summary(
+                    status=self._latest,
+                    antenna_mask=self._latest_antenna_mask,
+                    rfi_status=rfi_status,
+                    rfi_channels=rfi_channels,
+                    beam_names=self.beam_name_provider()
+                    if self.beam_name_provider
+                    else None,
+                )
+                self._latest_sefd = sefd_summary
+
+                self._broadcast_rfi(
+                    {
+                        "status": rfi_status.model_dump(),
+                        "channels": rfi_channels.model_dump(),
+                    }
+                )
+                self._broadcast_sefd(sefd_summary)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Error in RFI/SEFD loop: %s", exc)
+
+            elapsed = time.monotonic() - t0
+            sleep_time = max(0.01, self.rfi_interval - elapsed)
+            try:
+                await asyncio.sleep(sleep_time)
+            except asyncio.CancelledError:
+                break
+
     def _make_synthetic_antenna_mask(self) -> AntennaMaskStatus:
         """Generate nominal fallback AntennaMaskStatus for 64 antennas."""
         rng = np.random.default_rng(42)
-        base_curve = 12.0 + 3.0 * np.sin(np.linspace(0, 3 * np.pi, 84))
+        base_curve = 4.8 + 1.5 * np.sin(np.linspace(0, 3 * np.pi, 84))
         items = []
         for i in range(64):
-            noise = rng.normal(0, 0.4, 84)
-            spec = np.round(base_curve + noise + rng.uniform(-1.0, 1.0), 1).tolist()
+            noise = rng.normal(0, 0.25, 84)
+            spec = np.round(base_curve + noise + rng.uniform(-0.5, 0.5), 2).tolist()
             items.append(
                 AntennaMetricItem(
                     antenna_id=i,
+                    raw_id=i,
+                    physical_id=63 - i,
                     enabled=True,
-                    power_rms=8.0 + float(rng.uniform(-0.5, 0.5)),
+                    power_rms=round(3.1 + float(rng.uniform(-0.3, 0.3)), 3),
                     clip_fraction=0.001,
                     kurtosis=3.0,
                     robust_z_score=0.0,
@@ -415,76 +592,135 @@ class StatusPoller:
             active_antennas=64,
             active_elements=64,
             masked_antennas=0,
+            active_raw_elements=list(range(64)),
+            active_physical_antennas=list(range(63, -1, -1)),
             antennas=items,
         )
 
-    async def _correlator_mask_loop(self) -> None:
-        """1 Hz loop polling antenna mask and correlation visibilities."""
+    def _extract_antenna_spectra(
+        self,
+        ch_pwr: AntennaChannelPowerResponse | None,
+        mask_status: AntennaMaskStatus,
+    ) -> tuple[list[list[float]], list[list[float]]]:
+        """Convert AntennaChannelPowerResponse matrices into 672-ch and 84-bin dB spectra."""
+        n_elem = max(64, len(mask_status.antennas))
+        masked_set = {
+            ant.antenna_id for ant in mask_status.antennas if not ant.enabled
+        }
+
+        sb_blocks: list[np.ndarray] = []
+        if ch_pwr is not None and ch_pwr.subbands:
+            for sb in sorted(ch_pwr.subbands, key=lambda s: s.freq_start_hz):
+                if sb.has_channel_power and sb.channel_power:
+                    arr = np.asarray(sb.channel_power, dtype=np.float32)
+                    if arr.ndim == 2 and arr.shape[0] > 0 and arr.shape[1] > 0:
+                        sb_blocks.append(arr)
+
+        if sb_blocks:
+            full_lin = (
+                np.concatenate(sb_blocks, axis=0)
+                if len(sb_blocks) > 1
+                else sb_blocks[0]
+            )
+            full_db = power_to_db(full_lin, floor_db=-30.0)  # (n_freq, n_elem)
+            n_freq, actual_elem = full_db.shape
+            if actual_elem < n_elem:
+                pad = np.full((n_freq, n_elem - actual_elem), -30.0, dtype=np.float32)
+                full_db = np.hstack([full_db, pad])
+            for m_id in masked_set:
+                if 0 <= m_id < n_elem:
+                    full_db[:, m_id] = -30.0
+
+            full_list = np.round(full_db.T, 2).tolist()
+            num_bins = 84
+            bin_sz = max(1, n_freq // num_bins)
+            if n_freq >= num_bins and bin_sz > 1:
+                mini = (
+                    full_db[: num_bins * bin_sz]
+                    .reshape(num_bins, bin_sz, n_elem)
+                    .mean(axis=1)
+                    .T
+                )
+                mini_list = np.round(mini, 2).tolist()
+            else:
+                mini_list = np.round(full_db.T, 2).tolist()
+            return full_list, mini_list
+
+        # Fallback: realistic deterministic spectra when channel_power isn't populated
+        rng = np.random.default_rng(100)
+        x = np.linspace(0.0, 3.0 * np.pi, N_CHAN_TOTAL)
+        base = 4.8 + 1.5 * np.sin(x)
+        full_mat = np.tile(base, (n_elem, 1)) + rng.normal(
+            0.0, 0.25, size=(n_elem, N_CHAN_TOTAL)
+        )
+        for i in range(n_elem):
+            if i in masked_set:
+                full_mat[i, :] = 0.0
+        full_list = np.round(full_mat, 2).tolist()
+        mini_mat = full_mat.reshape(n_elem, 84, N_CHAN_TOTAL // 84).mean(axis=2)
+        mini_list = np.round(mini_mat, 2).tolist()
+        return full_list, mini_list
+
+    async def _antenna_mask_loop(self) -> None:
+        """1 Hz loop polling antenna mask status and per-antenna channel power spectra."""
         while self._running:
             t0 = time.monotonic()
-
-            # 1. Poll Antenna Mask first so masked elements propagate to correlator matrices
             try:
-                mask_status = await self.client.get_antenna_mask_status()
-                self._latest_antenna_mask = mask_status
-            except Exception:
-                if self._latest_antenna_mask is None:
-                    self._latest_antenna_mask = self._make_synthetic_antenna_mask()
-                mask_status = self._latest_antenna_mask
-
-            masked_set: set[int] = {
-                ant.antenna_id for ant in mask_status.antennas if not ant.enabled
-            }
-            mask_status.active_antennas = 64 - len(masked_set)
-            mask_status.active_elements = 64 - len(masked_set)
-            mask_status.masked_antennas = len(masked_set)
-
-            # 2. Correlator Visibilities
-            try:
-                buf_0, buf_1 = await asyncio.gather(
-                    self.client.get_inspect_frame("integrated_correlation_buffer_0"),
-                    self.client.get_inspect_frame("integrated_correlation_buffer_1"),
+                res_mask, res_ch_pwr = await asyncio.gather(
+                    self.client.get_antenna_mask_status(),
+                    self.client.get_antenna_channel_power(),
+                    return_exceptions=True,
                 )
-                vis_0 = unpack_astron_visibilities(buf_0)
-                vis_1 = unpack_astron_visibilities(buf_1)
-                if vis_0 is not None and vis_1 is not None:
-                    vis_cube = np.concatenate([vis_0, vis_1], axis=0)
-                    self._latest_vis_cube = vis_cube
-                    corr_diag = compute_correlator_diagnostics(
-                        vis_cube=vis_cube, masked_antennas=masked_set
-                    )
-                elif vis_0 is not None:
-                    self._latest_vis_cube = vis_0
-                    corr_diag = compute_correlator_diagnostics(
-                        subband_0=vis_0, masked_antennas=masked_set
-                    )
-                else:
-                    self._latest_vis_cube = None
-                    corr_diag = compute_correlator_diagnostics(
-                        subband_0=vis_0, subband_1=vis_1, masked_antennas=masked_set
-                    )
-                self._latest_correlator = corr_diag
-                self._broadcast_correlator(corr_diag)
-            except Exception as exc:
-                logger.debug("Correlator polling error, using fallback: %s", exc)
-                self._latest_vis_cube = None
-                corr_diag = compute_correlator_diagnostics(masked_antennas=masked_set)
-                self._latest_correlator = corr_diag
-                self._broadcast_correlator(corr_diag)
 
-            # 3. Attach per-antenna spectra to mask status and broadcast
-            if corr_diag and corr_diag.antenna_spectra_db:
+                mask_status = (
+                    res_mask
+                    if isinstance(res_mask, AntennaMaskStatus)
+                    and (len(res_mask.antennas) > 0 or res_mask.num_elements > 0)
+                    else None
+                )
+                if mask_status is None:
+                    if self._latest_antenna_mask is None:
+                        mask_status = self._make_synthetic_antenna_mask()
+                    else:
+                        mask_status = self._latest_antenna_mask
+
+                ch_pwr = (
+                    res_ch_pwr
+                    if isinstance(res_ch_pwr, AntennaChannelPowerResponse)
+                    else None
+                )
+
+                if mask_status.antennas:
+                    masked_set = {
+                        ant.antenna_id for ant in mask_status.antennas if not ant.enabled
+                    }
+                    n_total = len(mask_status.antennas)
+                    mask_status.active_antennas = n_total - len(masked_set)
+                    mask_status.active_elements = mask_status.active_antennas
+                    mask_status.masked_antennas = len(masked_set)
+
+                full_specs, mini_specs = self._extract_antenna_spectra(
+                    ch_pwr, mask_status
+                )
+                self._latest_antenna_spectra_db = full_specs
                 for i, ant in enumerate(mask_status.antennas):
-                    if i < len(corr_diag.antenna_spectra_db):
+                    if i < len(mini_specs):
                         ant.spectrum_db = (
-                            [0.0] * len(corr_diag.antenna_spectra_db[i])
+                            [0.0] * len(mini_specs[i])
                             if not ant.enabled
-                            else corr_diag.antenna_spectra_db[i]
+                            else mini_specs[i]
                         )
-            self._broadcast_antenna_mask(mask_status)
+
+                self._latest_antenna_mask = mask_status
+                self._broadcast_antenna_mask(mask_status)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Error in antenna mask loop: %s", exc)
 
             elapsed = time.monotonic() - t0
-            sleep_time = max(0.01, self.correlator_interval - elapsed)
+            sleep_time = max(0.01, self.antenna_mask_interval - elapsed)
             try:
                 await asyncio.sleep(sleep_time)
             except asyncio.CancelledError:
@@ -516,29 +752,29 @@ class StatusPoller:
             except asyncio.QueueFull:
                 pass
 
-    def _broadcast_grid(self, grid: SkyGridFrame) -> None:
-        """Push sky grid frame to subscribers, dropping stale items if client is slow."""
-        for q in list(self._grid_subscribers):
+    def _broadcast_rfi(self, payload: dict[str, Any]) -> None:
+        """Push RFI mitigation bundle to subscribers, dropping stale items if slow."""
+        for q in list(self._rfi_subscribers):
             if q.qsize() >= 5:
                 try:
                     q.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
             try:
-                q.put_nowait(grid)
+                q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass
 
-    def _broadcast_correlator(self, corr: CorrelatorDiagnostics) -> None:
-        """Push correlator diagnostics to subscribers, dropping stale items if client is slow."""
-        for q in list(self._correlator_subscribers):
+    def _broadcast_sefd(self, sefd: SefdSensitivitySummary) -> None:
+        """Push SEFD/sensitivity summary to subscribers, dropping stale items if slow."""
+        for q in list(self._sefd_subscribers):
             if q.qsize() >= 5:
                 try:
                     q.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
             try:
-                q.put_nowait(corr)
+                q.put_nowait(sefd)
             except asyncio.QueueFull:
                 pass
 
