@@ -1,157 +1,128 @@
-# Direct Beam Tracker REST API Reference
+# Direct Beam Tracker & RFI/SEFD Viewer REST API Reference
 
-Extracted from `kotekan-direct-beamformer/lib/cuda/cudaDirectBeamTrackerCommand.cpp`.
-All endpoints are registered under **both** prefixes `/direct_tracker/...` and
-`/beam_tracker/...` (aliases, identical behavior). Use `/direct_tracker/`.
+Verified against `kotekan/lib/cuda/cudaDirectBeamTrackerCommand.cpp`,
+`kotekan/lib/cuda/cudaRfiMitigationCommand.cpp`, and
+`kotekan/lib/cuda/cudaAntennaMaskCommand.cpp`.
 
-Base URL: the kotekan REST server, default `http://<host>:12048`.
-
----
-
-## POST /direct_tracker/set_target
-
-Steer a beam to direction cosines, optionally with a linear trajectory
-(end point or velocity).
-
-**Request JSON:**
-
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `beam_id` | int | no (default 0) | Beam index, `< MAX_DIRECT_BEAMS` (8) |
-| `l0` (or `l`) | float | no | Direction cosine l at segment start |
-| `m0` (or `m`) | float | no | Direction cosine m at segment start |
-| `l1` | float | no | l at segment end (linear interpolation) |
-| `m1` | float | no | m at segment end |
-| `dl` | float | no | Alternative: l velocity per sample; `l1 = l0 + dl * samples_per_data_set` |
-| `dm` | float | no | Alternative: m velocity per sample |
-
-Notes:
-- Omitted `l0`/`m0` keep the current values.
-- `n = sqrt(1 - l^2 - m^2)` is computed server-side; if `l^2+m^2 > 1`, `n = 0`.
-- Setting a target clears the celestial target (`celestial.is_set = false`).
-
-**Errors:** `400` if `beam_id >= MAX_DIRECT_BEAMS`.
+Base URL (Kotekan): `http://<host>:12048`  
+Base URL (Viewer): `http://<host>:8088`
 
 ---
 
-## POST /direct_tracker/set_celestial_target
+## 1. Kotekan Direct Tracker Endpoints (`/direct_tracker/...`)
 
-Steer a beam to an RA/Dec; kotekan converts to (l, m) internally.
+All `/direct_tracker/...` endpoints also accept `/beam_tracker/...` aliases.
 
-**Request JSON:** `beam_id` (int, default 0), `ra_deg` (float), `dec_deg` (float).
+### `GET /direct_tracker/status`
 
----
+Returns tracker state, spatial taper, calibration status, active antennas, LST, and active beams:
 
-## POST /direct_tracker/enable_beam
+- `active_antennas`, `active_raw_elements`, `active_physical_antennas`
+- `num_active_beams`, `max_beams`, `subframe_interpolation_enabled`
+- `taper_type`, `taper_pedestal`, `normalize_weights`, `enable_weight_bislc`, `bislc_diagonal_loading`
+- `apply_calibration_gains`, `gains_file`, `gains_generation`, `current_lst_hours`
+- `beams`: array of `{beam_id, l0, m0, n0, l1, m1, dl, dm, grid_index, calibrated, celestial_target}`
 
-Set the number of active beams.
+### `POST /direct_tracker/set_target`
+Steer a beam by ENU direction cosines `(l0, m0)` with optional `(l1, m1, dl, dm)` trajectory.
 
-**Request JSON:** `{"num_active_beams": 4}` — confirmed against
-`cudaDirectBeamTrackerCommand.cpp` (lines ~304–316). Value is clamped to
-`MAX_DIRECT_BEAMS` (8). Reply is plain text.
+### `POST /direct_tracker/set_celestial_target`
+Steer a beam by J2000 `(ra_deg, dec_deg)` coordinates.
 
----
+### `POST /direct_tracker/enable_beam`
+Set `{"num_active_beams": N}` (`1..16`).
 
-## POST /direct_tracker/mask_antenna
+### `POST /direct_tracker/set_interpolation`
+Toggle `{"enabled": bool}` subframe weight interpolation.
 
-Mask/unmask an antenna element.
-
-**Request JSON:** `{"antenna_id": 5, "enabled": true}` — confirmed against
-source (lines ~319–347). **Note the polarity:** `enabled: true` means the
-antenna is ACTIVE (source sets `antenna_mask[id] = enabled ? 1 : 0` and
-masked-out antennas are those with mask 0). 400 if `antenna_id` missing or
-≥ `MAX_DIRECT_ANTENNAS`. Reply is plain text.
-
----
-
-## POST /direct_tracker/set_interpolation
-
-Set weight interpolation mode (e.g. nearest-grid vs. linear).
-
-**Request JSON:** `{"enabled": true}` — confirmed against source
-(lines ~350–361). Toggles subframe phase interpolation (linear weight
-interpolation within a frame vs. per-frame weights). Reply is plain text.
-
----
-
-## GET /direct_tracker/status
-
-Full tracker state.
-
-**Response JSON:**
-
+### `POST /direct_tracker/set_taper`
+Update 2D spatial taper and normalization:
 ```json
 {
-  "active_antennas": 42,
-  "active_raw_elements": [0, 1, 5, ...],
-  "num_active_beams": 2,
-  "subframe_interpolation_enabled": true,
-  "beams": [
-    {
-      "beam_id": 0,
-      "l0": 0.12, "m0": -0.03, "n0": 0.9923,
-      "grid_index": 1234,
-      "celestial_target": {"is_set": true, "ra_deg": 83.63, "dec_deg": 22.01}
-    }
-  ]
+  "taper_type": "cosine_pedestal",
+  "taper_pedestal": 0.25,
+  "normalize_weights": true,
+  "enable_weight_bislc": false,
+  "bislc_diagonal_loading": 0.0001
 }
 ```
+Valid `taper_type` values: `"none"`, `"uniform"`, `"cosine_pedestal"`, `"hamming"`, `"blackman"`, `"blackman_pedestal"`, `"gaussian"`.
 
-`beams` contains one entry per active beam (`num_active_beams`).
-`celestial_target.is_set` is `false` when steered via direction cosines.
+### `POST /direct_tracker/set_calibration`
+Toggle calibration gains globally (`{"enabled": true}`) or per beam (`{"beam_id": 0, "enabled": false}`) for live A/B testing.
+
+### `POST /direct_tracker/reload_gains`
+Hot-reload a `(672, 64)` `complex64` `.npy` gain table:
+```json
+{"gains_file": "/data/calibration/corr_1113/gains_corr_1113_0_4_32_36_freqflt_672x64.npy"}
+```
+Returns JSON `{"status": "ok", "gains_file": "...", "gains_generation": 2, "instances": 2}`.
+
+### `GET /direct_tracker/beam_power`
+Returns stitched 672-channel beam power spectra `[max_beams][672]`.
 
 ---
 
-## Viewer Routine Endpoints (viewer REST, not kotekan)
+## 2. Kotekan Real-Time RFI Mitigation Endpoints (`/rfi_mitigation/...`)
 
-These are served by the viewer itself when started with `--routine`.
+### `GET /rfi_mitigation/status`
+Returns active thresholds/toggles (`enabled`, `blank_voltages_enabled`, `enable_sk_check`, `sk_sigma_threshold`, `enable_time_burst_check`, `burst_sigma_threshold`, `enable_freq_mad_check`, `freq_window_half_width`, `mad_sigma_threshold`, `enable_saturation_check`, `saturation_fraction_threshold`, `enable_morphology_sir`, `edge_channels_to_ignore`, `enable_persistent_ema`, `ema_alpha`, `static_notch_bands_mhz`) plus summary counters (`total_channels`, `flagged_channels`, `overall_flagged_chunk_fraction`, `top_rfi_channels`).
 
-### GET /api/routine
+### `GET /rfi_mitigation/channels`
+Returns 672 per-channel stats (`freq_mhz`, `subband`, `local_channel`, `mean_power`, `mean_sk`, `max_sk`, `freq_mad_z`, `flagged_chunk_fraction`, `flag_bits`, `gain`).
 
-Live routine state. `enabled: false` stub when the routine is off.
+`flag_bits` bitmask (`cudaRfiMitigation.hpp` `RfiFlagReason`):
+- `1 << 0` (`1`): `RFI_SK_IMPULSIVE`
+- `1 << 1` (`2`): `RFI_SK_CW_TONE`
+- `1 << 2` (`4`): `RFI_TIME_BURST`
+- `1 << 3` (`8`): `RFI_FREQ_MAD`
+- `1 << 4` (`16`): `RFI_STATIC_NOTCH`
+- `1 << 5` (`32`): `RFI_SATURATION_CLIP`
+- `1 << 6` (`64`): `RFI_MORPHOLOGY_SIR`
 
-```json
-{
-  "enabled": true,
-  "num_beams": 4,
-  "date_local": "2026-10-07",
-  "step_minutes": 60,
-  "current_slot": {
-    "time_local": "18:00",
-    "assignments": [
-      {"beam_id": 0, "label": "PSR J1644-4559", "ra_deg": 251.2, "dec_deg": -46.0, "altitude_deg": 75.7},
-      {"beam_id": 1, "label": "PKS B1934-638", "ra_deg": 294.85, "dec_deg": -63.71, "altitude_deg": 53.0},
-      {"beam_id": 2, "label": "Sgr A* / Galactic Center", "ra_deg": 266.42, "dec_deg": -29.01, "altitude_deg": 83.2},
-      {"beam_id": 3, "label": "3C 353", "ra_deg": 260.12, "dec_deg": -0.98, "altitude_deg": 57.6}
-    ]
-  },
-  "next_slot_time_local": "19:00",
-  "beam_names": {"0": "PSR J1644-4559", "1": "PKS B1934-638", "2": "Sgr A* / Galactic Center", "3": "3C 353"},
-  "last_applied_local": "2026-10-07 18:00:00",
-  "last_error": null
-}
-```
+### `POST /rfi_mitigation/configure`
+Partial or full JSON update of any RFI toggle, threshold, `static_notch_bands_mhz` (`[[lo, hi], ...]`), or `reset_ema: true`.
 
-### GET /api/routine/schedule
+### `POST /rfi_mitigation/reset_ema`
+Reset persistent EMA baseline globally (`{"all": true}`) or selectively (`{"freq_mhz": [382.2, 414.0]}`). Returns JSON.
 
-Full precomputed set-hour table (same shape as `current_slot` per slot).
-`404` when the routine is off.
+### `POST /rfi_mitigation/set_gains`
+Push 336-channel smooth passband pre-whitening gains per subband:
+`{"freq_start_hz": 300000000.0, "gains": [...]}`.
 
-### POST /api/routine/apply
+---
 
-Force-apply the slot that is current right now (re-points all beams).
-`404` when the routine is off.
+## 3. Kotekan Antenna Mask & Channel Power Endpoints (`/antenna_mask/...`)
 
-### WebSocket `/ws`
+- `GET /antenna_mask/status`: per-element health metrics (`power_rms`, `clip_fraction`, `kurtosis`, `coherence`, `passband_power`, `robust_z_score`, `status`) and `subbands`.
+- `GET /antenna_mask/channel_power`: per-subband `[n_local_freq][64]` power matrix in `LSB²` (`mean_active_power`, `channel_power`, `active_physical_antennas`).
+- `POST /antenna_mask/mask_antenna`, `POST /antenna_mask/configure`, `POST /antenna_mask/reset`.
 
-Routine state changes are pushed as `{"type": "routine", "data": <routine state>}`
-(the same payload as `GET /api/routine`); the latest state is sent on connect.
+---
 
-## Conventions (from CHARTS AGENTS.md §2.1)
+## 4. Viewer REST & WebSocket Endpoints (`/api/...`, `/ws`)
 
-- Direction cosines `(l, m, n)`, `n = sqrt(1 - l^2 - m^2)`, ENU topocentric frame.
-- RA/Dec in degrees, J2000.
-- Poll `/status` at 1–5 Hz for live display; do not poll faster than the
-  kotekan frame cadence. **The viewer polls at 2 Hz from a single server-side
-  poller** and fans out to browsers over WebSocket — see docs/PLANNING.md.
-- All POST endpoints reply with **plain text** (not JSON) on success.
+Mutating `POST` routes enforce `X-API-Token` / `Authorization: Bearer` when `--api-token` / `VIEWER_API_TOKEN` is configured.
+
+| Route | Method | Description |
+|---|---|---|
+| `/api/status` | `GET` | Latest polled `Status` |
+| `/api/history`, `/api/history/all` | `GET` | Ring buffer `(l0, m0)` beam history |
+| `/api/health` | `GET` | `{kotekan_reachable, poll_interval_s, spectrometer_interval_s, uptime_s}` |
+| `/api/spectrometer`, `/api/spectrometer/{beam_id}` | `GET` | Formed-beam 672-ch line spectra |
+| `/api/beam_power` | `GET` | Latest stitched `BeamPowerResponse` |
+| `/api/rfi` | `GET` | Latest `RfiStatus` |
+| `/api/rfi/channels` | `GET` | Latest 672-ch `RfiChannelsResponse` |
+| `/api/rfi/configure` | `POST` | Proxy validated `RfiConfigureRequest` -> Kotekan |
+| `/api/rfi/reset_ema` | `POST` | Proxy `RfiResetEmaRequest` -> Kotekan |
+| `/api/rfi/prewhiten` | `POST` | Compute smooth SB0/SB1 pre-whitening gains from `/rfi_mitigation/channels` & push |
+| `/api/sefd` | `GET` | Live `SefdSensitivitySummary` (4-bit quantizer `sigma`/`eta_q`, elevation-corrected `SEFD_beam`, `sigma_S`, `F_min`) |
+| `/api/taper` | `POST` | Proxy validated `TaperRequest` -> `/direct_tracker/set_taper` |
+| `/api/calibration/toggle` | `POST` | Proxy `CalibrationToggleRequest` -> `/direct_tracker/set_calibration` |
+| `/api/calibration/reload` | `POST` | Convert `.npz` via `charts-utils` (optional `zero_flagged`, `sync_rfi_notches`) & hot-reload `.npy` |
+| `/api/antenna_mask` | `GET` | Latest `AntennaMaskStatus` with 84-bin spectra |
+| `/api/antennas/{antenna_id}/spectrum` | `GET` | 672-ch antenna spectrum from `/antenna_mask/channel_power` |
+| `/api/antennas/mask`, `/api/antennas/auto_detect`, `/api/antennas/unmask_all` | `POST` | Masking controls |
+| `/api/beams/{id}/target`, `/api/beams/{id}/celestial`, `/api/beams/enable`, `/api/interpolation` | `POST` | Direct tracker steering & controls |
+| `/api/routine`, `/api/routine/schedule`, `/api/routine/apply` | `GET`/`POST` | Precomputed observation routine |
+| `/ws` | `WS` | Sends initial snapshots and live pushes (`status`, `spectrometer`, `rfi`, `sefd`, `antenna_mask`, `routine`) |

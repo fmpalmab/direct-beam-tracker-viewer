@@ -6,6 +6,18 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+VALID_TAPER_TYPES = frozenset(
+    {
+        "none",
+        "uniform",
+        "cosine_pedestal",
+        "hamming",
+        "blackman",
+        "blackman_pedestal",
+        "gaussian",
+    }
+)
+
 
 class CelestialTarget(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -22,7 +34,12 @@ class BeamInfo(BaseModel):
     l0: float = 0.0
     m0: float = 0.0
     n0: float = 0.0
+    l1: float | None = None
+    m1: float | None = None
+    dl: float = 0.0
+    dm: float = 0.0
     grid_index: int = 0
+    calibrated: bool = True
     celestial_target: CelestialTarget = Field(default_factory=CelestialTarget)
 
 
@@ -31,8 +48,19 @@ class Status(BaseModel):
 
     active_antennas: int = 0
     active_raw_elements: list[int] = Field(default_factory=list)
+    active_physical_antennas: list[int] = Field(default_factory=list)
     num_active_beams: int = 0
+    max_beams: int | None = None
     subframe_interpolation_enabled: bool = False
+    taper_type: str | None = None
+    taper_pedestal: float | None = None
+    normalize_weights: bool | None = None
+    enable_weight_bislc: bool | None = None
+    bislc_diagonal_loading: float | None = None
+    apply_calibration_gains: bool | None = None
+    gains_file: str | None = None
+    gains_generation: int | None = None
+    current_lst_hours: float | None = None
     beams: list[BeamInfo] = Field(default_factory=list)
 
 
@@ -198,10 +226,16 @@ class AntennaMetricItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     antenna_id: int
+    raw_id: int | None = None
+    physical_id: int | None = None
     enabled: bool = True
     power_rms: float = 0.0
     clip_fraction: float = 0.0
+    dc_fraction: float = 0.0
+    iq_imbalance: float = 0.0
     kurtosis: float = 3.0
+    coherence: float = 0.0
+    passband_power: float = 0.0
     robust_z_score: float = 0.0
     status: str = "nominal"
     spectrum_db: list[float] = Field(default_factory=list)
@@ -219,72 +253,204 @@ class AntennaMaskStatus(BaseModel):
     active_antennas: int = 64
     active_elements: int = 64
     masked_antennas: int = 0
+    active_raw_elements: list[int] = Field(default_factory=list)
+    active_physical_antennas: list[int] = Field(default_factory=list)
     antennas: list[AntennaMetricItem] = Field(default_factory=list)
 
 
-class SkyGridCentroid(BaseModel):
+class AntennaChannelPowerSubband(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    l: float = 0.0  # noqa: E741
-    m: float = 0.0
-    peak_beam_id: int = 0
-    peak_power: float = 0.0
-
-
-class SkyGridFrame(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    timestamp: float = 0.0
-    grid_step_rad: float = 0.02
-    grid_power: list[list[float]] = Field(default_factory=list)  # 4x4
-    beam_powers: list[float] = Field(default_factory=list)  # 16
-    peak_beam_id: int = 0
-    peak_power: float = 0.0
-    centroid_l: float = 0.0
-    centroid_m: float = 0.0
-    l_coords: list[float] = Field(default_factory=list)
-    m_coords: list[float] = Field(default_factory=list)
-    beam_power_spectra: list[list[float]] = Field(default_factory=list)
-
-
-class ReferenceFringe(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    antenna_a: int = 0
-    antenna_b: int = 0
-    amplitude: list[float] = Field(default_factory=list)
-    phase_rad: list[float] = Field(default_factory=list)
-    real: list[float] = Field(default_factory=list)
-    imag: list[float] = Field(default_factory=list)
-
-
-class CorrelatorDiagnostics(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    timestamp: float = 0.0
-    num_channels: int = 672
+    subband: int = 0
+    freq_start_hz: float = 300000000.0
     num_elements: int = 64
-    bandpass_db: list[float] = Field(default_factory=list)
-    amplitude_matrix: list[list[float]] = Field(default_factory=list)  # 64x64 raw mean amplitude
-    phase_matrix: list[list[float]] = Field(default_factory=list)  # 64x64 mean phase
-    coherence_matrix: list[list[float]] = Field(default_factory=list)  # 64x64 normalized coherence [0, 1]
-    auto_db: list[float] = Field(default_factory=list)  # 64 auto power in dB
-    reference_fringes: dict[int, ReferenceFringe] = Field(default_factory=dict)
-    antenna_spectra_db: list[list[float]] = Field(default_factory=list)  # 64 x 84 mini spectra
-    full_antenna_spectra_db: list[list[float]] = Field(
-        default_factory=list
-    )  # 64 x 672 full spectra
+    num_local_freq: int = 336
+    has_channel_power: bool = False
+    power_rms: list[float] = Field(default_factory=list)
+    active_physical_antennas: list[int] = Field(default_factory=list)
+    mean_active_power: list[float] = Field(default_factory=list)
+    channel_power: list[list[float]] = Field(default_factory=list)
 
 
-class BaselineSpectrumResponse(BaseModel):
+class AntennaChannelPowerResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    antenna_a: int = 0
-    antenna_b: int = 0
-    frequencies_mhz: list[float] = Field(default_factory=list)
-    amplitude: list[float] = Field(default_factory=list)
-    phase_rad: list[float] = Field(default_factory=list)
-    real: list[float] = Field(default_factory=list)
-    imag: list[float] = Field(default_factory=list)
-    delay_ns: float = 0.0
+    num_elements: int = 64
+    subbands: list[AntennaChannelPowerSubband] = Field(default_factory=list)
 
+
+class RfiTopChannel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    freq_mhz: float
+    mean_power: float = 0.0
+    mean_sk: float = 1.0
+    max_sk: float = 1.0
+    freq_mad_z: float = 0.0
+    flagged_chunk_fraction: float = 0.0
+    flag_bits: int = 0
+
+
+class RfiStatus(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    blank_voltages_enabled: bool = True
+    time_chunk_size: int = 256
+    sample_stride: int = 1
+    enable_sk_check: bool = True
+    sk_sigma_threshold: float = 4.5
+    enable_time_burst_check: bool = True
+    burst_sigma_threshold: float = 5.0
+    enable_freq_mad_check: bool = True
+    freq_window_half_width: int = 8
+    mad_sigma_threshold: float = 6.0
+    enable_saturation_check: bool = True
+    saturation_fraction_threshold: float = 0.02
+    enable_morphology_sir: bool = True
+    edge_channels_to_ignore: int = 0
+    enable_persistent_ema: bool = True
+    ema_alpha: float = 0.02
+    static_notch_bands_mhz: list[list[float]] = Field(default_factory=list)
+    total_channels: int = 672
+    flagged_channels: int = 0
+    overall_flagged_chunk_fraction: float = 0.0
+    top_rfi_channels: list[RfiTopChannel] = Field(default_factory=list)
+
+
+class RfiChannelItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    freq_mhz: float
+    subband: int = 0
+    local_channel: int = 0
+    mean_power: float = 0.0
+    mean_sk: float = 1.0
+    max_sk: float = 1.0
+    freq_mad_z: float = 0.0
+    flagged_chunk_fraction: float = 0.0
+    flag_bits: int = 0
+    gain: float = 1.0
+
+
+class RfiChannelsResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    total_channels: int = 0
+    channels: list[RfiChannelItem] = Field(default_factory=list)
+
+
+class RfiConfigureRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool | None = None
+    blank_voltages_enabled: bool | None = None
+    enable_sk_check: bool | None = None
+    sk_sigma_threshold: float | None = Field(default=None, gt=0.0)
+    enable_time_burst_check: bool | None = None
+    burst_sigma_threshold: float | None = Field(default=None, gt=0.0)
+    enable_freq_mad_check: bool | None = None
+    freq_window_half_width: int | None = Field(default=None, ge=2)
+    mad_sigma_threshold: float | None = Field(default=None, gt=0.0)
+    enable_saturation_check: bool | None = None
+    saturation_fraction_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    enable_morphology_sir: bool | None = None
+    edge_channels_to_ignore: int | None = Field(default=None, ge=0)
+    enable_persistent_ema: bool | None = None
+    ema_alpha: float | None = Field(default=None, ge=1e-4, le=1.0)
+    static_notch_bands_mhz: list[list[float]] | None = None
+    reset_ema: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_notches(self) -> RfiConfigureRequest:
+        if self.static_notch_bands_mhz is not None:
+            for band in self.static_notch_bands_mhz:
+                if len(band) != 2:
+                    raise ValueError(
+                        f"Each static notch band must be [lo_mhz, hi_mhz], got {band}"
+                    )
+                if band[0] > band[1]:
+                    raise ValueError(
+                        f"Static notch band lo_mhz ({band[0]}) must be <= hi_mhz ({band[1]})"
+                    )
+        return self
+
+
+class RfiResetEmaRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    freq_mhz: list[float] | None = None
+    all: bool = False
+
+
+class TaperRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    taper_type: str | None = None
+    taper_pedestal: float | None = Field(default=None, ge=0.0, le=1.0)
+    enable_weight_bislc: bool | None = None
+    bislc_diagonal_loading: float | None = Field(default=None, gt=0.0)
+    normalize_weights: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_taper(self) -> TaperRequest:
+        if self.taper_type is not None and self.taper_type not in VALID_TAPER_TYPES:
+            raise ValueError(
+                f"taper_type must be one of {sorted(VALID_TAPER_TYPES)}, got {self.taper_type!r}"
+            )
+        return self
+
+
+class CalibrationToggleRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    beam_id: int | None = Field(default=None, ge=0, le=15)
+
+
+class ReloadGainsRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    gains_file: str = Field(..., min_length=1)
+    zero_flagged: bool = False
+    sync_rfi_notches: bool = False
+
+
+class BeamSensitivityItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    beam_id: int
+    label: str = ""
+    l0: float = 0.0
+    m0: float = 0.0
+    n0: float = 1.0
+    alt_deg: float = 90.0
+    az_deg: float = 0.0
+    element_response: float = 1.0
+    sefd_beam_jy: float = 0.0
+    sigma_s_1s_jy: float = 0.0
+    fluence_min_1ms_jy_ms: float = 0.0
+    calibrated: bool = True
+
+
+class SefdSensitivitySummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: float = 0.0
+    nominal_zenith_sefd_jy: float = 721000.0
+    n_alive: int = 0
+    mean_power_lsb2: float = 0.0
+    quantizer_sigma_lsb: float = 0.0
+    quantizer_eta_q: float = 0.972
+    quantizer_q_rms: float = 0.0
+    in_optimal_window: bool = False
+    total_bandwidth_mhz: float = 201.6
+    rfi_flagged_fraction: float = 0.0
+    clean_bandwidth_mhz: float = 201.6
+    array_zenith_sefd_jy: float = 0.0
+    array_sigma_s_1s_jy: float = 0.0
+    array_fluence_min_1ms_jy_ms: float = 0.0
+    taper_type: str = "cosine_pedestal"
+    apply_calibration_gains: bool = True
+    source: str = "analytical"
+    beams: list[BeamSensitivityItem] = Field(default_factory=list)

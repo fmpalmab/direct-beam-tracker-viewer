@@ -398,12 +398,7 @@ body {
 #sky-canvas,
 #spectrometer-canvas,
 #waterfall-canvas,
-#grid-canvas,
-#corr-split-canvas,
-#corr-amp-canvas,
-#corr-phase-canvas,
-#corr-bandpass-canvas,
-#fringe-canvas,
+#rfi-spectrum-canvas,
 #ant-master-canvas,
 #antenna-mask-canvas {
   width: 100%;
@@ -414,13 +409,8 @@ body {
 
 /* Interactive canvas cursors (hover inspect / click-to-select) */
 #sky-canvas,
-#grid-canvas,
 #spectrometer-canvas,
-#corr-split-canvas,
-#corr-amp-canvas,
-#corr-phase-canvas,
-#corr-bandpass-canvas,
-#fringe-canvas,
+#rfi-spectrum-canvas,
 #ant-master-canvas {
   cursor: crosshair;
 }
@@ -764,10 +754,9 @@ body {
 }
 
 /* ========================================================================== */
-/* TAB 2: 16-Beam Sky Grid Camera Layout (F4.3)                              */
+/* Shared Tab Toolbars (RFI, Array)                                           */
 /* ========================================================================== */
-.camera-toolbar,
-.correlator-toolbar,
+.rfi-toolbar,
 .array-toolbar {
   background-color: var(--bg-panel);
   border: 1px solid var(--border-subtle);
@@ -1454,145 +1443,218 @@ body {
 }
 
 /* ========================================================================== */
-/* TAB 2: 16-Beam Sky Grid Camera & 4x4 Spectrogram Matrix                    */
+/* TAB 2: Real-Time RFI Mitigation Workspace                                  */
 /* ========================================================================== */
-.panel-layout-grid {
+.rfi-workspace-grid {
   display: grid;
-  grid-template-columns: 480px 1fr;
+  grid-template-columns: 1.45fr 1fr;
   gap: 16px;
+  margin-bottom: 16px;
   align-items: stretch;
 }
 
-.grid-canvas-wrap {
-  width: 100%;
-  height: 450px;
+@media (max-width: 1200px) {
+  .rfi-workspace-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
-.grid-waterfalls-matrix {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(4, 1fr);
+.rfi-canvas-wrap {
+  width: 100%;
+  height: 360px;
+}
+
+.rfi-legend-footer {
+  flex-wrap: wrap;
   gap: 8px;
-  flex: 1;
-  min-height: 450px;
 }
 
-.grid-wf-cell {
-  background: #050811;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+.rfi-legend-items {
   display: flex;
-  flex-direction: column;
-}
-
-.grid-wf-cell.peak-cell {
-  border-color: var(--accent-gold);
-  box-shadow: 0 0 10px rgba(251, 191, 36, 0.2);
-}
-
-.grid-wf-cell-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 3px 6px;
-  background: rgba(255, 255, 255, 0.03);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--accent-cyan);
-}
-
-.grid-wf-canvas-wrap {
-  flex: 1;
-  width: 100%;
-  min-height: 88px;
-}
-
-.grid-wf-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-/* ========================================================================== */
-/* TAB 3: Correlator Workspace (Side-by-Side Matrix + Inspector)              */
-/* ========================================================================== */
-.corr-split-card {
-  display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  gap: 14px;
   align-items: center;
 }
 
-.split-footer {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
+.legend-dot.purple {
+  background-color: var(--accent-purple);
 }
 
-.correlator-workspace-grid {
-  display: grid;
-  grid-template-columns: 520px 1fr;
-  gap: 16px;
-  align-items: start;
-}
-
-.split-canvas-wrap {
-  width: 100%;
-  height: 470px;
-}
-
-.correlator-dual-stack {
+.rfi-control-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.dual-canvas-wrap {
-  width: 100%;
-  height: 245px;
+.rfi-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
 }
 
-.correlator-right-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+.rfi-threshold-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 8px 10px;
 }
 
-.fringe-canvas-wrap {
-  width: 100%;
-  height: 210px;
+.rfi-table-wrap {
+  max-height: 260px;
+  overflow-y: auto;
 }
 
-.bandpass-canvas-wrap {
-  width: 100%;
-  height: 185px;
+.rfi-flag-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-right: 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.35);
 }
 
-.split-colorbars-row {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  flex-wrap: wrap;
-  gap: 8px;
+.rfi-flag-badge.notch {
+  background: rgba(168, 85, 247, 0.18);
+  color: #d8b4fe;
+  border-color: rgba(168, 85, 247, 0.4);
 }
 
-.baseline-picker {
+.rfi-flag-badge.burst {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.38);
+}
+
+/* ========================================================================== */
+/* TAB 3: SEFD, Sensitivity & Calibration Workspace                           */
+/* ========================================================================== */
+.sefd-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 1320px) {
+  .sefd-cards-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .sefd-cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.sefd-stat-card {
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.sefd-card-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.sefd-card-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-highlight);
+}
+
+.sefd-card-value.highlight {
+  color: var(--accent-cyan);
+}
+
+.sefd-card-value.success {
+  color: var(--accent-green);
+}
+
+.sefd-card-sub {
+  font-size: 10px;
+  color: var(--text-dim);
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
-.input-xs {
-  width: 44px;
-  padding: 2px 4px;
-  font-family: var(--font-mono);
+.sefd-workspace-grid {
+  display: grid;
+  grid-template-columns: 1.45fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1200px) {
+  .sefd-workspace-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sefd-table-wrap {
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.cal-taper-card {
+  gap: 12px;
+}
+
+.cal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cal-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.cal-current-meta {
   font-size: 11px;
+  color: var(--text-dim);
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  color: #fff;
-  text-align: center;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  word-break: break-all;
+}
+
+.cal-reload-form,
+.taper-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cal-checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: 2px 0;
 }
 
 /* ========================================================================== */
